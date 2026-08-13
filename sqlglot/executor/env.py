@@ -2,6 +2,7 @@ import datetime
 import inspect
 import re
 import statistics
+from decimal import Decimal
 from functools import wraps
 
 from sqlglot import exp
@@ -174,6 +175,8 @@ def cast(this, to):
         return str(this)
     if to in {exp.DType.FLOAT, exp.DType.DOUBLE}:
         return float(this)
+    if to in exp.DataType.REAL_TYPES:
+        return Decimal(str(this) if isinstance(this, float) else this)
     if to in exp.DataType.NUMERIC_TYPES:
         return int(this)
     raise NotImplementedError(f"Casting {this} to '{to}' not implemented.")

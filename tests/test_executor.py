@@ -3,6 +3,7 @@ import csv
 import datetime
 import unittest
 from datetime import date, time
+from decimal import Decimal
 from concurrent.futures import ProcessPoolExecutor
 
 import duckdb
@@ -864,6 +865,12 @@ class TestExecutor(unittest.TestCase):
             ("CAST('1' AS LONG)", 1),
             ("CAST('1.1' AS FLOAT)", 1.1),
             ("CAST('12:05:01' AS TIME)", time(12, 5, 1)),
+            ("CAST('9.99' AS NUMERIC)", Decimal("9.99")),
+            ("CAST(9.99 AS DECIMAL)", Decimal("9.99")),
+            ("CAST(1 AS DECIMAL)", Decimal("1")),
+            ("CAST(9.99 AS DOUBLE)", 9.99),
+            ("CAST(TRUE AS DECIMAL)", Decimal("1")),
+            ("CAST(NULL AS DECIMAL)", None),
             ("COALESCE(NULL)", None),
             ("COALESCE(NULL, NULL)", None),
             ("COALESCE(NULL, 'b')", "b"),
