@@ -2,6 +2,7 @@ import datetime
 import inspect
 import re
 import statistics
+from decimal import ROUND_HALF_UP, Decimal
 from functools import wraps
 
 from sqlglot import exp
@@ -190,6 +191,17 @@ def ordered(this, desc, nulls_first):
     return (LAST if nulls_first else FIRST, reverse_key(this) if desc else this)
 
 
+@null_if_any
+def _round(this, decimals=None, truncate=None):
+    if not isinstance(this, Decimal):
+        return round(this, ndigits=decimals)
+
+    if decimals is None:
+        return int(this.to_integral_value(rounding=ROUND_HALF_UP))
+
+    return this.quantize(Decimal(1).scaleb(-int(decimals)), rounding=ROUND_HALF_UP)
+
+
 def _like(this, e, flags=0):
     return bool(
         re.fullmatch(re.escape(e).replace("_", ".").replace("%", ".*"), this, re.DOTALL | flags)
@@ -293,7 +305,7 @@ ENV = {
     "POW": null_if_any(pow),
     "REVERSE": null_if_any(lambda this: this[::-1]),
     "RIGHT": null_if_any(lambda this, e: this[-e:]),
-    "ROUND": null_if_any(lambda this, decimals=None, truncate=None: round(this, ndigits=decimals)),
+    "ROUND": _round,
     "STRPOSITION": str_position,
     "SUB": null_if_any(lambda e, this: e - this),
     "SUBSTRING": substring,

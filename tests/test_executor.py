@@ -2,6 +2,7 @@ import ast
 import csv
 import datetime
 import unittest
+from decimal import Decimal
 from datetime import date, time
 from concurrent.futures import ProcessPoolExecutor
 from unittest import mock
@@ -939,6 +940,25 @@ class TestExecutor(unittest.TestCase):
         ):
             with self.subTest(sql):
                 self.assertEqual(execute(sql, tables=tables).rows, expected)
+
+    def test_round_ties_away_from_zero_on_exact_types(self):
+        schema = {"t": {"d": "DECIMAL", "f": "DOUBLE"}}
+
+        def rounded(column, value, decimals=None):
+            tables = {"t": [{"d": Decimal(value), "f": float(value)}]}
+            if decimals is None:
+                sql = f"SELECT ROUND({column}) AS x FROM t"
+            else:
+                sql = f"SELECT ROUND({column}, {decimals}) AS x FROM t"
+            return execute(sql, schema=schema, tables=tables).rows
+
+        for value, exact, binary in (("2.5", 3, 2), ("0.5", 1, 0), ("-2.5", -3, -2), ("1.5", 2, 2)):
+            with self.subTest(value):
+                self.assertEqual(rounded("d", value), [(exact,)])
+                self.assertEqual(rounded("f", value), [(binary,)])
+
+        self.assertEqual(rounded("d", "0.25", 1), [(Decimal("0.3"),)])
+        self.assertEqual(rounded("d", "1" * 30 + ".5"), [(int("1" * 29 + "2"),)])
 
     def test_negated_like(self):
         """NOT LIKE must exclude what LIKE matches, and match no NULL either."""
