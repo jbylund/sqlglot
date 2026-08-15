@@ -148,7 +148,11 @@ def unnest(select, parent_select, next_alias_name):
 def decorrelate(select, parent_select, external_columns, next_alias_name):
     where = select.args.get("where")
 
-    if not where or where.find(exp.Or) or select.find(exp.Limit, exp.Offset):
+    if not where or select.find(exp.Limit, exp.Offset):
+        return
+
+    if where.find(exp.Or):
+        _anti_exists(select, parent_select, external_columns, next_alias_name, where)
         return
 
     table_alias = next_alias_name()
@@ -326,6 +330,62 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
 
 def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
+
+
+def _anti_exists(select, parent_select, external_columns, next_alias_name, where):
+    parent_predicate = select.find_ancestor(exp.Predicate)
+    if not isinstance(parent_predicate, exp.Exists):
+        return
+
+    negation = parent_predicate.parent
+    while isinstance(negation, exp.Paren):
+        negation = negation.parent
+
+    ancestor = negation.parent if isinstance(negation, exp.Not) else None
+    while isinstance(ancestor, (exp.And, exp.Paren)):
+        ancestor = ancestor.parent
+
+    if (
+        not isinstance(ancestor, (exp.Where, exp.Join))
+        or where.find(exp.AggFunc, exp.Subquery)
+        or (
+            not select.args.get("group")
+            and (select.args.get("having") or find_in_scope(select, exp.AggFunc))
+        )
+        or any(column.find_ancestor(exp.Where) is not where for column in external_columns)
+    ):
+        return
+
+    table_alias = next_alias_name()
+    marker = exp.column(next_alias_name(), table_alias)
+    correlated = set(external_columns)
+    key_aliases = {}
+    group_by = []
+
+    on = where.this.copy()
+    for column in on.find_all(exp.Column):
+        if column in correlated:
+            continue
+        if column not in key_aliases:
+            key_aliases[column] = next_alias_name()
+            group_by.append(column.copy())
+        column.replace(exp.column(key_aliases[column], table_alias))
+
+    where.this.replace(exp.true())
+
+    select.set("expressions", [exp.alias_(exp.Literal.number(1), marker.name)])
+    for key, alias in key_aliases.items():
+        select.select(f"{key} AS {alias}", copy=False)
+
+    _replace(negation, f"{marker} IS NULL")
+
+    parent_select.join(
+        select.group_by(*group_by, copy=False),
+        on=on,
+        join_type="LEFT",
+        join_alias=table_alias,
+        copy=False,
+    )
 
 
 def _other_operand(expression: object) -> exp.Expr | None:

@@ -31,6 +31,10 @@ SELECT * FROM x LEFT JOIN (SELECT SUM(y.a) AS a, y.a AS _u_1, ARRAY_AGG(y.b) AS 
 SELECT * FROM x WHERE EXISTS (SELECT y.a AS a, y.b AS b FROM y WHERE x.a = y.a);
 SELECT * FROM x LEFT JOIN (SELECT y.a AS a FROM y WHERE TRUE GROUP BY y.a) AS _u_0 ON x.a = _u_0.a WHERE NOT _u_0.a IS NULL;
 
+# title: correlated NOT EXISTS with a disjunction unnests into an anti-join
+SELECT * FROM x WHERE NOT EXISTS (SELECT y.a AS a FROM y WHERE y.a = x.a OR y.a IS NULL);
+SELECT * FROM x LEFT JOIN (SELECT 1 AS _u_1, y.a AS _u_2 FROM y WHERE TRUE GROUP BY y.a) AS _u_0 ON _u_0._u_2 = x.a OR _u_0._u_2 IS NULL WHERE _u_0._u_1 IS NULL;
+
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y LIMIT 10);
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y LIMIT 10);
 
