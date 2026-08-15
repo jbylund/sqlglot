@@ -933,6 +933,33 @@ order by
         p_brand,
         p_type,
         p_size;
+WITH "_u_0" AS (
+  SELECT
+    "supplier"."s_suppkey" AS "s_suppkey"
+  FROM "supplier" AS "supplier"
+  WHERE
+    "supplier"."s_comment" LIKE '%Customer%Complaints%'
+), "_u_3" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "_u_0" AS "_u_0"
+), "_u_4" AS (
+  SELECT
+    COUNT(*) AS "_count",
+    "_u_1"."s_suppkey" AS "_u_5"
+  FROM "_u_0" AS "_u_1"
+  GROUP BY
+    "_u_1"."s_suppkey"
+), "_u_6" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "supplier" AS "supplier"
+  WHERE
+    "supplier"."s_comment" LIKE '%Customer%Complaints%'
+    AND "supplier"."s_suppkey" IS NULL
+  HAVING
+    COUNT(*) = 0
+)
 SELECT
   "part"."p_brand" AS "p_brand",
   "part"."p_type" AS "p_type",
@@ -944,14 +971,13 @@ JOIN "part" AS "part"
   AND "part"."p_partkey" = "partsupp"."ps_partkey"
   AND "part"."p_size" IN (49, 14, 23, 45, 19, 3, 36, 9)
   AND "part"."p_type" NOT LIKE 'MEDIUM POLISHED%'
+JOIN "_u_3" AS "_u_3"
+  ON "_u_3"."_count" = 0 OR "partsupp"."ps_suppkey" IS NOT NULL
+LEFT JOIN "_u_4" AS "_u_4"
+  ON "_u_4"."_u_5" = "partsupp"."ps_suppkey"
+CROSS JOIN "_u_6" AS "_u_6"
 WHERE
-  NOT "partsupp"."ps_suppkey" IN (
-    SELECT
-      "supplier"."s_suppkey" AS "s_suppkey"
-    FROM "supplier" AS "supplier"
-    WHERE
-      "supplier"."s_comment" LIKE '%Customer%Complaints%'
-  )
+  COALESCE("_u_4"."_count", 0) = 0
 GROUP BY
   "part"."p_brand",
   "part"."p_type",

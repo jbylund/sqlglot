@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import typing as t
+
 from sqlglot import exp
 from sqlglot.helper import name_sequence
 from sqlglot.optimizer.scope import ScopeType, find_in_scope, traverse_scope
@@ -24,6 +27,8 @@ def unnest_subqueries(expression: E) -> E:
         sqlglot.Expr: unnested expression
     """
     next_alias_name = name_sequence("_u_")
+
+    _rewrite_not_in(expression, next_alias_name)
 
     for scope in traverse_scope(expression):
         select = scope.expression
@@ -55,7 +60,8 @@ def unnest(select, parent_select, next_alias_name):
         or not parent_select.args.get("from_")
         # NOT IN has three-valued semantics that the LEFT-JOIN-anti rewrite doesn't preserve:
         # a NULL in the subquery makes NOT IN evaluate to NULL for every outer row.
-        or (isinstance(predicate, exp.In) and isinstance(predicate.parent, exp.Not))
+        # Handled by _rewrite_not_in above; a negated IN still here was declined there.
+        or (isinstance(predicate, exp.In) and _negation(predicate) is not None)
     ):
         return
 
@@ -214,6 +220,10 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
     if parent_predicate is None and not is_subquery_projection:
         return
 
+    # a negated IN loses its three-valued NULL semantics in the join below
+    if isinstance(parent_predicate, exp.In) and _negation(parent_predicate) is not None:
+        return
+
     # if the value of the subquery is not an agg or a key, we need to collect it into an array
     # so that it can be grouped. For subquery projections, we use a MAX aggregation instead.
     agg_func = exp.Max if is_subquery_projection else exp.ArrayAgg
@@ -326,6 +336,106 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
 
 def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
+
+
+def _rewrite_not_in(expression: exp.Expr, next_alias_name: t.Callable[[], str]) -> None:
+    # NOT IN's three-valued NULL logic doesn't survive the LEFT-JOIN rewrite used
+    # for IN, so spell it out as scalar COUNT subqueries, which unnest() already
+    # handles:
+    #   x NOT IN (SELECT b FROM u)
+    #   => (x IS NOT NULL OR (SELECT COUNT(*) FROM (SELECT b FROM u) _u_0) = 0)
+    #  AND (SELECT COUNT(*) FROM (SELECT b FROM u) _u_1 WHERE _u_1.b = x) = 0
+    #  AND (SELECT COUNT(*) FROM (SELECT b FROM u) _u_2 WHERE _u_2.b IS NULL) = 0
+    # A NULL x is kept only when the subquery is empty, and one NULL in the subquery
+    # poisons every row, so the poison check counts the whole subquery.
+    negations = []
+    for in_ in expression.find_all(exp.In):
+        if "query" not in in_.args:
+            continue
+        negation = _negation(in_)
+        if negation is not None and _in_predicate_position(negation):
+            negations.append((in_, negation))
+
+    # Innermost first: the rewrite copies the subquery, so a nested NOT IN rewritten
+    # after its parent would be a node no longer attached to the tree.
+    for in_, negation in sorted(negations, key=lambda pair: pair[0].depth, reverse=True):
+        query = in_.args["query"]
+        inner = query.this if isinstance(query, exp.Subquery) else query
+        if (
+            not isinstance(inner, exp.Query)
+            or len(inner.selects) != 1
+            or any(scope.external_columns for scope in traverse_scope(inner))
+        ):
+            # declined: the executor refuses a subquery that reaches it, so this stays loud
+            continue
+
+        column = inner.selects[0].alias_or_name
+        if not column:
+            continue
+
+        value = in_.this
+        negation.replace(
+            exp.and_(
+                exp.or_(
+                    exp.Is(this=value.copy(), expression=exp.Null(), negate=True),
+                    _count_where(inner, None, next_alias_name),
+                ),
+                exp.and_(
+                    _count_where(
+                        inner, lambda a: exp.column(column, a).eq(value.copy()), next_alias_name
+                    ),
+                    _count_where(
+                        inner, lambda a: exp.column(column, a).is_(exp.Null()), next_alias_name
+                    ),
+                ),
+            )
+        )
+
+
+def _negation(predicate: exp.In) -> exp.Not | None:
+    # The NOT negating this IN, looking through parentheses, or None. An even number
+    # of wrapping NOTs (NOT NOT x IN ...) unnests like a plain IN.
+    node = predicate.parent
+    negations = 0
+    top = None
+    while True:
+        while isinstance(node, exp.Paren):
+            node = node.parent
+        if not isinstance(node, exp.Not):
+            return top if negations % 2 == 1 else None
+        negations += 1
+        top = node
+        node = node.parent
+
+
+def _in_predicate_position(node: exp.Expr) -> bool:
+    # Whether the node filters rows: under WHERE, HAVING or a join's ON, through
+    # boolean connectives only.
+    parent = node.parent
+    while isinstance(parent, (exp.And, exp.Or, exp.Not, exp.Paren)):
+        parent = parent.parent
+    return isinstance(parent, (exp.Where, exp.Having, exp.Join))
+
+
+def _count_where(
+    inner: exp.Query,
+    condition: t.Callable[[str], exp.Expr] | None,
+    next_alias_name: t.Callable[[], str],
+) -> exp.EQ:
+    # (SELECT COUNT(*) AS _count FROM (inner) AS alias WHERE condition(alias)) = 0
+    # -- the wrap counts the subquery's result rows, so a grouping, an aggregate or
+    # a LIMIT inside keeps its meaning. The count wants an alias: this runs after
+    # qualify, so nothing later names an anonymous projection.
+    alias = next_alias_name()
+    count = exp.select(exp.alias_(exp.Count(this=exp.Star()), "_count")).from_(
+        exp.Subquery(
+            this=inner.copy(),
+            alias=exp.TableAlias(this=exp.to_identifier(alias)),
+        )
+    )
+    if condition is not None:
+        count = count.where(condition(alias))
+    return exp.EQ(this=exp.Subquery(this=count), expression=exp.Literal.number(0))
 
 
 def _other_operand(expression: object) -> exp.Expr | None:

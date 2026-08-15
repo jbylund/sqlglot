@@ -90,6 +90,14 @@ def _dpipe_sql(self: generator.Generator, e: exp.DPipe) -> str:
     return self.func("SAFECONCAT" if e.args.get("safe") else "CONCAT", e.this, e.expression)
 
 
+def _in_sql(self: generator.Generator, e: exp.In) -> str:
+    # a subquery here was declined by unnest_subqueries; refuse it, because
+    # IN(x) with no candidates evaluates to FALSE for every row
+    if "query" in e.args:
+        raise ValueError("IN with a subquery cannot be executed")
+    return self.func("IN", e.this, *e.expressions)
+
+
 class PythonGenerator(generator.Generator):
     TRANSFORMS = {
         **{klass: _rename for klass in subclasses(exp.__name__, exp.Binary)},
@@ -110,7 +118,7 @@ class PythonGenerator(generator.Generator):
         exp.DPipe: _dpipe_sql,
         exp.Extract: lambda self, e: f"EXTRACT('{e.name.lower()}', {self.sql(e, 'expression')})",
         exp.ILike: _like_sql,
-        exp.In: lambda self, e: self.func("IN", e.this, *e.expressions),
+        exp.In: _in_sql,
         exp.Interval: lambda self, e: f"INTERVAL({self.sql(e.this)}, '{self.sql(e.unit)}')",
         exp.Is: lambda self, e: (
             self.binary(e, "!=" if e.args.get("negate") else "==")

@@ -140,6 +140,146 @@ WHERE
 GROUP BY
   "x"."a";
 
+# title: NOT IN with an empty subquery keeps every row
+SELECT a FROM x WHERE a NOT IN (SELECT b FROM y WHERE b > 100);
+WITH "_u_0" AS (
+  SELECT
+    "y"."b" AS "b"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" > 100
+), "_u_3" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "_u_0" AS "_u_0"
+), "_u_4" AS (
+  SELECT
+    COUNT(*) AS "_count",
+    "_u_1"."b" AS "_u_5"
+  FROM "_u_0" AS "_u_1"
+  GROUP BY
+    "_u_1"."b"
+), "_u_6" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" > 100 AND "y"."b" IS NULL
+  HAVING
+    COUNT(*) = 0
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+JOIN "_u_3" AS "_u_3"
+  ON "_u_3"."_count" = 0 OR "x"."a" IS NOT NULL
+LEFT JOIN "_u_4" AS "_u_4"
+  ON "_u_4"."_u_5" = "x"."a"
+CROSS JOIN "_u_6" AS "_u_6"
+WHERE
+  COALESCE("_u_4"."_count", 0) = 0;
+
+# title: a NULL in the subquery poisons NOT IN for every row
+SELECT a FROM x WHERE a NOT IN (SELECT b FROM y);
+WITH "_u_0" AS (
+  SELECT
+    "y"."b" AS "b"
+  FROM "y" AS "y"
+), "_u_3" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "_u_0" AS "_u_0"
+), "_u_4" AS (
+  SELECT
+    COUNT(*) AS "_count",
+    "_u_1"."b" AS "_u_5"
+  FROM "_u_0" AS "_u_1"
+  GROUP BY
+    "_u_1"."b"
+), "_u_6" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" IS NULL
+  HAVING
+    COUNT(*) = 0
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+JOIN "_u_3" AS "_u_3"
+  ON "_u_3"."_count" = 0 OR "x"."a" IS NOT NULL
+LEFT JOIN "_u_4" AS "_u_4"
+  ON "_u_4"."_u_5" = "x"."a"
+CROSS JOIN "_u_6" AS "_u_6"
+WHERE
+  COALESCE("_u_4"."_count", 0) = 0;
+
+# title: NOT IN with a filtered subquery
+SELECT a FROM x WHERE a NOT IN (SELECT b FROM y WHERE b < 3);
+WITH "_u_0" AS (
+  SELECT
+    "y"."b" AS "b"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" < 3
+), "_u_3" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "_u_0" AS "_u_0"
+), "_u_4" AS (
+  SELECT
+    COUNT(*) AS "_count",
+    "_u_1"."b" AS "_u_5"
+  FROM "_u_0" AS "_u_1"
+  GROUP BY
+    "_u_1"."b"
+), "_u_6" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" < 3 AND "y"."b" IS NULL
+  HAVING
+    COUNT(*) = 0
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+JOIN "_u_3" AS "_u_3"
+  ON "_u_3"."_count" = 0 OR "x"."a" IS NOT NULL
+LEFT JOIN "_u_4" AS "_u_4"
+  ON "_u_4"."_u_5" = "x"."a"
+CROSS JOIN "_u_6" AS "_u_6"
+WHERE
+  COALESCE("_u_4"."_count", 0) = 0;
+
+# title: NOT IN with a literal left operand
+SELECT a FROM x WHERE 7 NOT IN (SELECT b FROM y WHERE b > 100);
+WITH "_u_4" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "y" AS "y"
+  WHERE
+    FALSE
+  HAVING
+    COUNT(*) = 0
+), "_u_5" AS (
+  SELECT
+    COUNT(*) AS "_count"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" > 100 AND "y"."b" IS NULL
+  HAVING
+    COUNT(*) = 0
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+CROSS JOIN "_u_4" AS "_u_4"
+CROSS JOIN "_u_5" AS "_u_5";
+
 # title: Root subquery
 (SELECT a FROM x) LIMIT 1;
 (
