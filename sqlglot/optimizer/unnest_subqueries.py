@@ -148,7 +148,11 @@ def unnest(select, parent_select, next_alias_name):
 def decorrelate(select, parent_select, external_columns, next_alias_name):
     where = select.args.get("where")
 
-    if not where or where.find(exp.Or) or select.find(exp.Limit, exp.Offset):
+    if not where or select.find(exp.Limit, exp.Offset):
+        return
+
+    if where.find(exp.Or):
+        _anti_exists(select, parent_select, external_columns, next_alias_name, where)
         return
 
     table_alias = next_alias_name()
@@ -339,6 +343,56 @@ def _is_negated(expression: exp.Expr) -> bool:
             negated = not negated
         node = node.parent
     return negated
+
+
+def _anti_exists(select, parent_select, external_columns, next_alias_name, where):
+    parent_predicate = select.find_ancestor(exp.Predicate)
+    if not isinstance(parent_predicate, exp.Exists):
+        return
+
+    negation = parent_predicate.parent
+    while isinstance(negation, exp.Paren):
+        negation = negation.parent
+    if not isinstance(negation, exp.Not):
+        return
+
+    ancestor = negation.parent
+    while isinstance(ancestor, (exp.And, exp.Paren)):
+        ancestor = ancestor.parent
+    if not isinstance(ancestor, (exp.Where, exp.Join)):
+        return
+
+    if (
+        any(column.find_ancestor(exp.Where) is not where for column in external_columns)
+        or where.find(exp.AggFunc, exp.Subquery)
+        or len(select.selects) != 1
+    ):
+        return
+
+    table_alias = next_alias_name()
+    marker = exp.column(next_alias_name(), table_alias)
+
+    on = where.this.copy()
+    externals = {column.sql() for column in external_columns}
+    projections = [exp.alias_(exp.Literal.number(1), marker.name)]
+    keys = []
+    projected = {}
+    for column in on.find_all(exp.Column):
+        if column.sql() in externals:
+            continue
+        key = projected.get(column.sql())
+        if key is None:
+            key = next_alias_name()
+            projected[column.sql()] = key
+            projections.append(exp.alias_(column.copy(), key))
+            keys.append(column.copy())
+        column.replace(exp.column(key, table_alias))
+
+    select.set("where", None)
+    select.set("expressions", projections)
+    select.group_by(*keys, copy=False)
+    negation.replace(marker.is_(exp.Null()))
+    parent_select.join(select, on=on, join_type="LEFT", join_alias=table_alias, copy=False)
 
 
 def _other_operand(expression: object) -> exp.Expr | None:

@@ -662,6 +662,28 @@ class TestExecutor(unittest.TestCase):
             ],
         )
 
+    def test_correlated_not_exists_disjunction(self):
+        tables = {
+            "x": [{"a": 1}, {"a": 2}, {"a": None}],
+            "y": [{"b": 2}, {"b": None}],
+            "y_empty": [],
+        }
+        schema = {"x": {"a": "int"}, "y": {"b": "int"}, "y_empty": {"b": "int"}}
+
+        for sql, expected in (
+            ("SELECT a FROM x WHERE NOT EXISTS (SELECT b FROM y WHERE b = x.a OR b IS NULL)", []),
+            ("SELECT a FROM x WHERE NOT EXISTS (SELECT b FROM y WHERE b = x.a)", [(1,), (None,)]),
+            (
+                "SELECT a FROM x WHERE NOT EXISTS (SELECT b FROM y_empty WHERE b = x.a OR b IS NULL)",
+                [(1,), (2,), (None,)],
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(
+                    sorted(execute(sql, tables=tables, schema=schema).rows, key=str),
+                    sorted(expected, key=str),
+                )
+
     def test_table_depth_mismatch(self):
         tables = {"table": []}
         schema = {"db": {"table": {"col": "VARCHAR"}}}
