@@ -86,7 +86,16 @@ def unnest(select, parent_select, next_alias_name):
         ):
             column = exp.Max(this=column)
         elif not isinstance(select.parent, exp.Subquery):
-            return
+            if not isinstance(select.parent, exp.Exists):
+                return
+            node = predicate.parent
+            if isinstance(node, exp.Not):
+                node = node.parent
+            while isinstance(node, (exp.And, exp.Paren)):
+                node = node.parent
+            if not isinstance(node, (exp.Where, exp.Join)):
+                return
+            select.set("distinct", exp.Distinct())
 
         join_type = "CROSS"
         on_clause = None
