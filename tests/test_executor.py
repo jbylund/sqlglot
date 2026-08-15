@@ -601,10 +601,36 @@ class TestExecutor(unittest.TestCase):
             "SELECT x.id FROM x WHERE EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id))",
             "SELECT x.id FROM x WHERE NOT EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id))",
             "SELECT x.id, (SELECT MAX(y.id) FROM y) AS max_id FROM x",
+            "SELECT x.id FROM x WHERE x.id NOT IN (SELECT y.id FROM y WHERE y.id = x.id)",
+            "SELECT x.id FROM x WHERE NOT (x.id IN (SELECT y.id FROM y))",
+            "SELECT x.id FROM x WHERE NOT NOT NOT (x.id IN (SELECT y.id FROM y))",
+            "SELECT 1 WHERE 1 IN (SELECT 1)",
         ):
             with self.subTest(sql):
                 with self.assertRaises(ExecuteError):
                     execute(sql, tables=tables)
+
+    def test_unsupported_in_unnest_and_field(self):
+        for sql, dialect, tables in (
+            ("SELECT 1 WHERE 1 IN UNNEST([1, 2])", "bigquery", None),
+            ("SELECT t.a FROM t WHERE t.a IN t.f", None, {"t": [{"a": 1, "f": [1, 2]}]}),
+        ):
+            with self.subTest(sql):
+                with self.assertRaises(ExecuteError):
+                    execute(sql, dialect=dialect, tables=tables)
+
+    def test_in_subquery_double_negation(self):
+        tables = {
+            "x": [{"id": 1}, {"id": 2}, {"id": 3}],
+            "y": [{"id": 1}, {"id": 2}],
+        }
+        self.assertEqual(
+            execute(
+                "SELECT x.id FROM x WHERE NOT NOT (x.id IN (SELECT y.id FROM y))",
+                tables=tables,
+            ).rows,
+            [(1,), (2,)],
+        )
 
     def test_correlated_count(self):
         tables = {
