@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import typing as t
+
 from sqlglot import exp
 from sqlglot.helper import name_sequence
 from sqlglot.optimizer.scope import ScopeType, find_in_scope, traverse_scope
@@ -24,6 +27,8 @@ def unnest_subqueries(expression: E) -> E:
         sqlglot.Expr: unnested expression
     """
     next_alias_name = name_sequence("_u_")
+
+    _rewrite_not_in(expression, next_alias_name)
 
     for scope in traverse_scope(expression):
         select = scope.expression
@@ -344,14 +349,62 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
 
 
-def _is_negated(expression: exp.Expr) -> bool:
-    negated = False
+def _negation(expression: exp.Expr) -> exp.Not | None:
+    negation = None
     node = expression.parent
     while isinstance(node, (exp.Paren, exp.Not)):
         if isinstance(node, exp.Not):
-            negated = not negated
+            negation = None if negation else node
         node = node.parent
-    return negated
+    return negation
+
+
+def _is_negated(expression: exp.Expr) -> bool:
+    return _negation(expression) is not None
+
+
+def _rewrite_not_in(expression: exp.Expr, next_alias_name: t.Callable[[], str]) -> None:
+    negations = []
+    for in_ in expression.find_all(exp.In):
+        if "query" not in in_.args:
+            continue
+        negation = _negation(in_)
+        if negation is not None and _in_predicate_position(negation):
+            negations.append((in_, negation))
+
+    for in_, negation in sorted(negations, key=lambda pair: pair[0].depth, reverse=True):
+        query = in_.args["query"]
+        inner = query.this if isinstance(query, exp.Subquery) else query
+        if (
+            not isinstance(inner, exp.Query)
+            or len(inner.selects) != 1
+            or any(scope.external_columns for scope in traverse_scope(inner))
+        ):
+            continue
+
+        column = inner.selects[0].alias_or_name
+        if not column:
+            continue
+
+        value = in_.this
+        alias = next_alias_name()
+        exists = exp.Exists(
+            this=exp.select(exp.alias_(exp.Literal.number(1), next_alias_name()))
+            .from_(
+                exp.Subquery(
+                    this=inner.copy(),
+                    alias=exp.TableAlias(this=exp.to_identifier(alias)),
+                )
+            )
+            .where(
+                exp.or_(
+                    exp.column(column, alias).eq(value.copy()),
+                    exp.column(column, alias).is_(exp.Null()),
+                    exp.Is(this=value.copy(), expression=exp.Null()),
+                )
+            )
+        )
+        negation.replace(exp.Not(this=exists))
 
 
 def _anti_exists(select, parent_select, external_columns, next_alias_name, where):
@@ -402,6 +455,13 @@ def _anti_exists(select, parent_select, external_columns, next_alias_name, where
     select.group_by(*keys, copy=False)
     negation.replace(marker.is_(exp.Null()))
     parent_select.join(select, on=on, join_type="LEFT", join_alias=table_alias, copy=False)
+
+
+def _in_predicate_position(node: exp.Expr) -> bool:
+    parent = node.parent
+    while isinstance(parent, (exp.And, exp.Paren)):
+        parent = parent.parent
+    return isinstance(parent, (exp.Where, exp.Join))
 
 
 def _other_operand(expression: object) -> exp.Expr | None:

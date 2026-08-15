@@ -140,6 +140,83 @@ WHERE
 GROUP BY
   "x"."a";
 
+# title: NOT IN with an empty subquery keeps every row
+SELECT a FROM x WHERE a NOT IN (SELECT b FROM y WHERE b > 100);
+WITH "_u_2" AS (
+  SELECT
+    1 AS "_u_3",
+    "y"."b" AS "_u_4"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" > 100
+  GROUP BY
+    "y"."b"
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+LEFT JOIN "_u_2" AS "_u_2"
+  ON "_u_2"."_u_4" = "x"."a" OR "_u_2"."_u_4" IS NULL OR "x"."a" IS NULL
+WHERE
+  "_u_2"."_u_3" IS NULL;
+
+# title: a NULL in the subquery poisons NOT IN for every row
+SELECT a FROM x WHERE a NOT IN (SELECT b FROM y);
+WITH "_u_2" AS (
+  SELECT
+    1 AS "_u_3",
+    "y"."b" AS "_u_4"
+  FROM "y" AS "y"
+  GROUP BY
+    "y"."b"
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+LEFT JOIN "_u_2" AS "_u_2"
+  ON "_u_2"."_u_4" = "x"."a" OR "_u_2"."_u_4" IS NULL OR "x"."a" IS NULL
+WHERE
+  "_u_2"."_u_3" IS NULL;
+
+# title: NOT IN with a filtered subquery
+SELECT a FROM x WHERE a NOT IN (SELECT b FROM y WHERE b < 3);
+WITH "_u_2" AS (
+  SELECT
+    1 AS "_u_3",
+    "y"."b" AS "_u_4"
+  FROM "y" AS "y"
+  WHERE
+    "y"."b" < 3
+  GROUP BY
+    "y"."b"
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+LEFT JOIN "_u_2" AS "_u_2"
+  ON "_u_2"."_u_4" = "x"."a" OR "_u_2"."_u_4" IS NULL OR "x"."a" IS NULL
+WHERE
+  "_u_2"."_u_3" IS NULL;
+
+# title: NOT IN with a literal left operand
+SELECT a FROM x WHERE 7 NOT IN (SELECT b FROM y WHERE b > 100);
+WITH "_u_2" AS (
+  SELECT DISTINCT
+    1 AS "_u_1"
+  FROM "y" AS "y"
+  WHERE
+    (
+      "y"."b" = 7 OR "y"."b" IS NULL
+    ) AND "y"."b" > 100
+)
+SELECT
+  "x"."a" AS "a"
+FROM "x" AS "x"
+LEFT JOIN "_u_2" AS "_u_2"
+  ON TRUE
+WHERE
+  "_u_2"."_u_1" IS NULL;
+
 # title: Root subquery
 (SELECT a FROM x) LIMIT 1;
 (
