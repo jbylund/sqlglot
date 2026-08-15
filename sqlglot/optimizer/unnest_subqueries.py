@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import typing as t
+
 from sqlglot import exp
 from sqlglot.helper import name_sequence
 from sqlglot.optimizer.scope import ScopeType, find_in_scope, traverse_scope
@@ -24,6 +27,8 @@ def unnest_subqueries(expression: E) -> E:
         sqlglot.Expr: unnested expression
     """
     next_alias_name = name_sequence("_u_")
+
+    _rewrite_not_in(expression, next_alias_name)
 
     for scope in traverse_scope(expression):
         select = scope.expression
@@ -55,7 +60,8 @@ def unnest(select, parent_select, next_alias_name):
         or not parent_select.args.get("from_")
         # NOT IN has three-valued semantics that the LEFT-JOIN-anti rewrite doesn't preserve:
         # a NULL in the subquery makes NOT IN evaluate to NULL for every outer row.
-        or (isinstance(predicate, exp.In) and isinstance(predicate.parent, exp.Not))
+        # Handled by _rewrite_not_in above; a negated IN still here was declined there.
+        or (isinstance(predicate, exp.In) and _negation(predicate) is not None)
     ):
         return
 
@@ -86,7 +92,21 @@ def unnest(select, parent_select, next_alias_name):
         ):
             column = exp.Max(this=column)
         elif not isinstance(select.parent, exp.Subquery):
-            return
+            # An EXISTS holds its subquery unwrapped; unnest it only where the result
+            # filters rows conjunctively: the LEFT JOIN below multiplies the rows it
+            # matches, which a projection or a disjunct would observe.
+            if not isinstance(select.parent, exp.Exists):
+                return
+            node = predicate.parent
+            if isinstance(node, exp.Not):
+                node = node.parent
+            while isinstance(node, (exp.And, exp.Paren)):
+                node = node.parent
+            if not isinstance(node, (exp.Where, exp.Join)):
+                return
+            # DISTINCT keeps merge_subqueries from inlining the constant marker
+            # below, which would fold the null test away
+            select.set("distinct", exp.Distinct())
 
         join_type = "CROSS"
         on_clause = None
@@ -148,7 +168,11 @@ def unnest(select, parent_select, next_alias_name):
 def decorrelate(select, parent_select, external_columns, next_alias_name):
     where = select.args.get("where")
 
-    if not where or where.find(exp.Or) or select.find(exp.Limit, exp.Offset):
+    if not where or select.find(exp.Limit, exp.Offset):
+        return
+
+    if where.find(exp.Or):
+        _anti_exists(select, parent_select, external_columns, next_alias_name, where)
         return
 
     table_alias = next_alias_name()
@@ -212,6 +236,10 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
     # When the subquery is embedded inside a function (e.g. COALESCE, TRIM) in the SELECT list,
     # the ancestor chain contains no Predicate node AND the subquery is not a direct projection.
     if parent_predicate is None and not is_subquery_projection:
+        return
+
+    # a negated IN loses its three-valued NULL semantics in the join below
+    if isinstance(parent_predicate, exp.In) and _negation(parent_predicate) is not None:
         return
 
     # if the value of the subquery is not an agg or a key, we need to collect it into an array
@@ -326,6 +354,147 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
 
 def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
+
+
+def _rewrite_not_in(expression: exp.Expr, next_alias_name: t.Callable[[], str]) -> None:
+    # NOT IN's three-valued NULL logic doesn't survive the LEFT-JOIN rewrite used
+    # for IN, so spell it out as an anti-EXISTS, which decorrelate() handles:
+    #   x NOT IN (SELECT b FROM u)
+    #   => NOT EXISTS (SELECT 1 FROM (SELECT b FROM u) _u_0
+    #                  WHERE _u_0.b = x OR _u_0.b IS NULL OR x IS NULL)
+    # The OR arms carry the NULL logic: a NULL in the subquery poisons every row,
+    # and a NULL x survives only when the subquery is empty. The wrap counts the
+    # subquery's result rows, so a grouping, an aggregate or a LIMIT inside keeps
+    # its meaning. The projection wants an alias: this runs after qualify, so
+    # nothing later names an anonymous projection.
+    negations = []
+    for in_ in expression.find_all(exp.In):
+        if "query" not in in_.args:
+            continue
+        negation = _negation(in_)
+        if negation is not None and _in_predicate_position(negation):
+            negations.append((in_, negation))
+
+    # Innermost first: the rewrite copies the subquery, so a nested NOT IN rewritten
+    # after its parent would be a node no longer attached to the tree.
+    for in_, negation in sorted(negations, key=lambda pair: pair[0].depth, reverse=True):
+        query = in_.args["query"]
+        inner = query.this if isinstance(query, exp.Subquery) else query
+        if (
+            not isinstance(inner, exp.Query)
+            or len(inner.selects) != 1
+            or any(scope.external_columns for scope in traverse_scope(inner))
+        ):
+            # declined: the executor refuses a subquery that reaches it, so this stays loud
+            continue
+
+        column = inner.selects[0].alias_or_name
+        if not column:
+            continue
+
+        value = in_.this
+        alias = next_alias_name()
+        exists = exp.Exists(
+            this=exp.select(exp.alias_(exp.Literal.number(1), next_alias_name()))
+            .from_(
+                exp.Subquery(
+                    this=inner.copy(),
+                    alias=exp.TableAlias(this=exp.to_identifier(alias)),
+                )
+            )
+            .where(
+                exp.or_(
+                    exp.column(column, alias).eq(value.copy()),
+                    exp.column(column, alias).is_(exp.Null()),
+                    exp.Is(this=value.copy(), expression=exp.Null()),
+                )
+            )
+        )
+        negation.replace(exp.Not(this=exists))
+
+
+def _anti_exists(select, parent_select, external_columns, next_alias_name, where):
+    # NOT EXISTS (SELECT ... WHERE p OR q ...): an outer row survives exactly when
+    # nothing matches, so there is nothing to deduplicate and the disjunction can
+    # ride the join condition of an anti-join.
+    parent_predicate = select.find_ancestor(exp.Predicate)
+    if not isinstance(parent_predicate, exp.Exists):
+        return
+
+    negation = parent_predicate.parent
+    while isinstance(negation, exp.Paren):
+        negation = negation.parent
+    if not isinstance(negation, exp.Not):
+        return
+
+    # only sound where the result filters rows conjunctively: the anti-join
+    # multiplies the rows it drops, which a disjunct or a projection would observe
+    ancestor = negation.parent
+    while isinstance(ancestor, (exp.And, exp.Paren)):
+        ancestor = ancestor.parent
+    if not isinstance(ancestor, (exp.Where, exp.Join)):
+        return
+
+    if (
+        any(column.find_ancestor(exp.Where) is not where for column in external_columns)
+        or where.find(exp.AggFunc, exp.Subquery)
+        or len(select.selects) != 1
+    ):
+        return
+
+    table_alias = next_alias_name()
+    marker = exp.column(next_alias_name(), table_alias)
+
+    on = where.this.copy()
+    externals = {column.sql() for column in external_columns}
+    projections = [exp.alias_(exp.Literal.number(1), marker.name)]
+    keys = []
+    projected = {}
+    for column in on.find_all(exp.Column):
+        if column.sql() in externals:
+            continue
+        key = projected.get(column.sql())
+        if key is None:
+            key = next_alias_name()
+            projected[column.sql()] = key
+            projections.append(exp.alias_(column.copy(), key))
+            keys.append(column.copy())
+        column.replace(exp.column(key, table_alias))
+
+    # dedupe (harmless for an existence check) and, by carrying a GROUP BY, stay
+    # out of merge_subqueries, which would inline the constant marker and fold
+    # the null test away
+    select.set("where", None)
+    select.set("expressions", projections)
+    select.group_by(*keys, copy=False)
+    negation.replace(marker.is_(exp.Null()))
+    parent_select.join(select, on=on, join_type="LEFT", join_alias=table_alias, copy=False)
+
+
+def _negation(predicate: exp.In) -> exp.Not | None:
+    # The NOT negating this IN, looking through parentheses, or None. An even number
+    # of wrapping NOTs (NOT NOT x IN ...) unnests like a plain IN.
+    node = predicate.parent
+    negations = 0
+    top = None
+    while True:
+        while isinstance(node, exp.Paren):
+            node = node.parent
+        if not isinstance(node, exp.Not):
+            return top if negations % 2 == 1 else None
+        negations += 1
+        top = node
+        node = node.parent
+
+
+def _in_predicate_position(node: exp.Expr) -> bool:
+    # Whether the node filters rows conjunctively: under WHERE or a join's ON,
+    # through AND only. The anti-join the rewrite produces multiplies the rows it
+    # drops, which a disjunct or a grouping would observe.
+    parent = node.parent
+    while isinstance(parent, (exp.And, exp.Paren)):
+        parent = parent.parent
+    return isinstance(parent, (exp.Where, exp.Join))
 
 
 def _other_operand(expression: object) -> exp.Expr | None:

@@ -601,6 +601,7 @@ class TestExecutor(unittest.TestCase):
             "SELECT x.id FROM x WHERE EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id))",
             "SELECT x.id FROM x WHERE NOT EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id))",
             "SELECT x.id, (SELECT MAX(y.id) FROM y) AS max_id FROM x",
+            "SELECT x.id FROM x WHERE x.id NOT IN (SELECT y.id FROM y WHERE y.id = x.id)",
         ):
             with self.subTest(sql):
                 with self.assertRaises(ExecuteError):
@@ -635,6 +636,40 @@ class TestExecutor(unittest.TestCase):
                 (0, 1),
             ],
         )
+
+    def test_not_in_subquery(self):
+        tables = {
+            "x": [{"a": 1}, {"a": 2}, {"a": None}],
+            "y": [{"b": 2}, {"b": 3}],
+            "y_null": [{"b": 2}, {"b": None}],
+            "y_empty": [],
+        }
+        schema = {
+            "x": {"a": "int"},
+            "y": {"b": "int"},
+            "y_null": {"b": "int"},
+            "y_empty": {"b": "int"},
+        }
+
+        for sql, expected in (
+            ("SELECT a FROM x WHERE a NOT IN (SELECT b FROM y)", [(1,)]),
+            ("SELECT a FROM x WHERE a NOT IN (SELECT b FROM y_null)", []),
+            ("SELECT a FROM x WHERE a NOT IN (SELECT b FROM y_empty)", [(1,), (2,), (None,)]),
+            ("SELECT a FROM x WHERE NOT (a IN (SELECT b FROM y))", [(1,)]),
+            ("SELECT a FROM x WHERE NOT NOT (a IN (SELECT b FROM y))", [(2,)]),
+            ("SELECT a FROM x WHERE 5 NOT IN (SELECT b FROM y)", [(1,), (2,), (None,)]),
+            ("SELECT a FROM x WHERE NULL NOT IN (SELECT b FROM y)", []),
+            ("SELECT a FROM x WHERE NULL NOT IN (SELECT b FROM y_empty)", [(1,), (2,), (None,)]),
+            ("SELECT a FROM x WHERE a NOT IN (SELECT b + 1 FROM y)", [(1,), (2,)]),
+            ("SELECT a FROM x WHERE a NOT IN (SELECT MAX(b) FROM y)", [(1,), (2,)]),
+            ("SELECT a FROM x WHERE NOT EXISTS (SELECT 1 FROM y_empty)", [(1,), (2,), (None,)]),
+            ("SELECT a FROM x WHERE EXISTS (SELECT 1 FROM y)", [(1,), (2,), (None,)]),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(
+                    sorted(execute(sql, tables=tables, schema=schema).rows, key=str),
+                    sorted(expected, key=str),
+                )
 
     def test_table_depth_mismatch(self):
         tables = {"table": []}
