@@ -10,16 +10,15 @@ from sqlglot.executor.env import ENV
 from sqlglot.executor.table import RowReader, Table
 from sqlglot.generators.python import (
     PythonGenerator,
-    SubqueryArg,
     SubqueryComparison,
     SubqueryExists,
     SubqueryScalar,
 )
-from sqlglot.helper import name_sequence
 from sqlglot.optimizer.scope import build_scope
 
-# nodes that can hold a SELECT the optimizer declined to rewrite
-SUBQUERY_NODES = (exp.Subquery, exp.Exists, exp.All)
+# Nodes that can hold a SELECT the optimizer declined to rewrite. ANY and ALL are listed because
+# `x > ALL (SELECT ...)` and `x > SOME (SELECT ...)` hold the SELECT directly, with no Subquery.
+SUBQUERY_NODES = (exp.Subquery, exp.Exists, exp.All, exp.Any)
 
 
 class PythonExecutor:
@@ -29,7 +28,6 @@ class PythonExecutor:
         self.tables = tables or {}
         self._subquery_plans = {}
         self._plan_names_by_sql = {}
-        self._next_plan_name = name_sequence("_sq_")
         self.env.update(
             SUBQUERY_COMPARISON=self._subquery_comparison,
             SUBQUERY_EXISTS=self._subquery_exists,
@@ -127,7 +125,7 @@ class PythonExecutor:
 
         for i, column in enumerate(scope.external_columns if scope else []):
             outer_columns.append(column.copy())
-            column.replace(SubqueryArg(this=exp.Literal.number(i)))
+            column.replace(exp.var(f"subquery_args[{i}]"))
 
         plan = self._register_subquery(query)
         parent = subquery.parent
@@ -141,13 +139,8 @@ class PythonExecutor:
                 f"Subquery used as an expression returned {len(query.selects)} columns"
             )
 
-        # `x > ALL (SELECT ...)` parses to All(this=Select), with no Subquery of its own, while
-        # `x > ANY (SELECT ...)` parses to Any(this=Subquery(...)) -- hence the two branches
-        if isinstance(subquery, exp.All):
-            return self._compile_quantified(parent, "ALL", plan, outer_columns)
-
-        if isinstance(parent, exp.Any):
-            return self._compile_quantified(parent.parent, "ANY", plan, outer_columns)
+        if isinstance(subquery, (exp.All, exp.Any)):
+            return self._compile_quantified(parent, subquery.key.upper(), plan, outer_columns)
 
         if isinstance(parent, exp.In):
             # IN is ANY with an implicit equality
@@ -177,7 +170,7 @@ class PythonExecutor:
         name = self._plan_names_by_sql.get(sql)
 
         if name is None:
-            name = self._plan_names_by_sql[sql] = self._next_plan_name()
+            name = self._plan_names_by_sql[sql] = f"_sq_{len(self._subquery_plans)}"
             self._subquery_plans[name] = (planner.Plan(query), {})
 
         return exp.Literal.string(name)
@@ -187,23 +180,25 @@ class PythonExecutor:
         plan, cache = self._subquery_plans[plan_name]
 
         try:
-            if args in cache:
-                return cache[args]
+            return cache[args]
+        except KeyError:
+            pass
         except TypeError:  # an unhashable correlated value can't be memoized
-            return self._execute_subquery(plan, args)
+            cache = None
 
-        cache[args] = table = self._execute_subquery(plan, args)
-        return table
-
-    def _execute_subquery(self, plan, args):
         # Context copies env when it is built, so the sub-plan's contexts see these args while
         # contexts already mid-evaluation keep theirs; nesting rides on the Python call stack
         outer_args = self.env["subquery_args"]
         self.env["subquery_args"] = args
         try:
-            return self.execute(plan)
+            table = self.execute(plan)
         finally:
             self.env["subquery_args"] = outer_args
+
+        if cache is not None:
+            cache[args] = table
+
+        return table
 
     def _subquery_exists(self, plan_name, *args):
         return bool(self._subquery_table(plan_name, args).rows)

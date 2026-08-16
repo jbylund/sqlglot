@@ -90,65 +90,34 @@ def _dpipe_sql(self: generator.Generator, e: exp.DPipe) -> str:
     return self.func("SAFECONCAT" if e.args.get("safe") else "CONCAT", e.this, e.expression)
 
 
-# The executor rewrites a subquery it has to evaluate itself into one of the calls below. In each,
-# `plan` names a sub-plan registered on the executor and `expressions` holds the correlated values
-# read from the outer row, which the sub-plan reads back as SubqueryArg.
-#
-# These live outside sqlglot.expressions, so they are absent from exp.EXPR_CLASSES and the
-# generator cannot auto-discover a `<key>_sql` method for them. TRANSFORMS is the only dispatch
-# that reaches them.
+# The executor rewrites a subquery it has to evaluate itself into one of the calls below. The
+# generator has no transform for them: the base Func fallback emits `SUBQUERY_EXISTS(...)` etc.
+# from arg_types order, which is exactly the ENV function each one names. `plan` names a sub-plan
+# registered on the executor, and `expressions` holds the correlated values read from the outer row.
 
 
 class SubqueryComparison(exp.Expression, exp.Func):
     """`this` compared with `op` against ANY or ALL of the rows `plan` yields."""
 
     arg_types = {"this": True, "plan": True, "op": True, "quantifier": True, "expressions": False}
-    is_var_len_args = True
 
 
 class SubqueryExists(exp.Expression, exp.Func):
     """Whether `plan` yields any row."""
 
     arg_types = {"plan": True, "expressions": False}
-    is_var_len_args = True
 
 
 class SubqueryScalar(exp.Expression, exp.Func):
     """The single value `plan` yields, or None if it yields no row."""
 
     arg_types = {"plan": True, "expressions": False}
-    is_var_len_args = True
-
-
-class SubqueryArg(exp.Expression, exp.Func):
-    """A correlated value a sub-plan reads from the outer row; `this` is its position."""
-
-    arg_types = {"this": True}
-
-
-def _subquery_comparison_sql(self: generator.Generator, e: SubqueryComparison) -> str:
-    return self.func(
-        "SUBQUERY_COMPARISON",
-        e.this,
-        e.args["plan"],
-        e.args["op"],
-        e.args["quantifier"],
-        *e.expressions,
-    )
 
 
 class PythonGenerator(generator.Generator):
     TRANSFORMS = {
         **{klass: _rename for klass in subclasses(exp.__name__, exp.Binary)},
         **{klass: _rename for klass in exp.ALL_FUNCTIONS},
-        SubqueryArg: lambda self, e: f"subquery_args[{e.name}]",
-        SubqueryComparison: _subquery_comparison_sql,
-        SubqueryExists: lambda self, e: self.func(
-            "SUBQUERY_EXISTS", e.args["plan"], *e.expressions
-        ),
-        SubqueryScalar: lambda self, e: self.func(
-            "SUBQUERY_SCALAR", e.args["plan"], *e.expressions
-        ),
         exp.Case: _case_sql,
         exp.Alias: lambda self, e: self.sql(e.this),
         exp.Array: inline_array_sql,
