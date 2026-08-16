@@ -90,10 +90,48 @@ def _dpipe_sql(self: generator.Generator, e: exp.DPipe) -> str:
     return self.func("SAFECONCAT" if e.args.get("safe") else "CONCAT", e.this, e.expression)
 
 
+class SubqueryCmp(exp.Expression, exp.Func):
+    """`this` compared with `op` against ANY or ALL rows of the sub-plan named by `key`."""
+
+    arg_types = {"this": True, "key": True, "op": True, "quantifier": True, "expressions": False}
+    is_var_len_args = True
+
+
+class SubqueryExists(exp.Expression, exp.Func):
+    """Whether the sub-plan named by `this` yields rows for the given correlated values."""
+
+    arg_types = {"this": True, "expressions": False}
+    is_var_len_args = True
+
+
+class SubqueryParam(exp.Expression, exp.Func):
+    """A correlated value passed into a sub-plan, by position."""
+
+    arg_types = {"this": True}
+
+
+class SubqueryScalar(exp.Expression, exp.Func):
+    """The single value of the sub-plan named by `this`, for the given correlated values."""
+
+    arg_types = {"this": True, "expressions": False}
+    is_var_len_args = True
+
+
 class PythonGenerator(generator.Generator):
     TRANSFORMS = {
         **{klass: _rename for klass in subclasses(exp.__name__, exp.Binary)},
         **{klass: _rename for klass in exp.ALL_FUNCTIONS},
+        SubqueryCmp: lambda self, e: self.func(
+            "SUBQUERY_CMP",
+            e.this,
+            e.args["key"],
+            e.args["op"],
+            e.args["quantifier"],
+            *e.expressions,
+        ),
+        SubqueryExists: lambda self, e: self.func("SUBQUERY_EXISTS", e.this, *e.expressions),
+        SubqueryParam: lambda self, e: f"params[{e.name}]",
+        SubqueryScalar: lambda self, e: self.func("SUBQUERY_SCALAR", e.this, *e.expressions),
         exp.Case: _case_sql,
         exp.Alias: lambda self, e: self.sql(e.this),
         exp.Array: inline_array_sql,

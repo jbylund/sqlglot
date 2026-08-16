@@ -8,7 +8,15 @@ from sqlglot.errors import ExecuteError
 from sqlglot.executor.context import Context
 from sqlglot.executor.env import ENV
 from sqlglot.executor.table import RowReader, Table
-from sqlglot.generators.python import PythonGenerator
+from sqlglot.generators.python import (
+    PythonGenerator,
+    SubqueryCmp,
+    SubqueryExists,
+    SubqueryParam,
+    SubqueryScalar,
+)
+from sqlglot.helper import name_sequence
+from sqlglot.optimizer.scope import build_scope
 
 
 class PythonExecutor:
@@ -16,6 +24,15 @@ class PythonExecutor:
         self.generator = Python().generator(identify=True, comments=False)
         self.env = {**ENV, **(env or {})}
         self.tables = tables or {}
+        self._subqueries = {}
+        self._subquery_keys = {}
+        self._next_subquery_key = name_sequence("_sq_")
+        self.env.update(
+            SUBQUERY_CMP=self._subquery_cmp,
+            SUBQUERY_EXISTS=self._subquery_exists,
+            SUBQUERY_SCALAR=self._subquery_scalar,
+            params=(),
+        )
 
     def execute(self, plan):
         finished = set()
@@ -66,8 +83,143 @@ class PythonExecutor:
         if not expression:
             return None
 
+        expression = self._extract_subqueries(expression)
         sql = self.generator.generate(expression)
         return compile(sql, sql, "eval", optimize=2)
+
+    def _extract_subqueries(self, expression):
+        """Replace the subqueries the optimizer left in place with calls into sub-plans.
+
+        Only the outermost subquery of each expression is replaced here. Its own steps come
+        back through `generate`, so any subquery nested inside it is handled on that pass.
+        """
+        if not expression.find(exp.Subquery, exp.Exists, exp.All):
+            return expression
+
+        expression = expression.copy()
+
+        while True:
+            holder = expression.find(exp.Subquery, exp.Exists, exp.All)
+
+            if holder is None:
+                return expression
+
+            node, replacement = self._compile_subquery(holder)
+
+            if node is expression:
+                expression = replacement
+            else:
+                node.replace(replacement)
+
+    def _compile_subquery(self, holder):
+        """Register a sub-plan for `holder` and return the node to replace and its replacement."""
+        query = holder.this
+        scope = build_scope(query)
+        correlated = []
+
+        # correlated columns are read from the outer row and passed in positionally
+        for i, column in enumerate(scope.external_columns if scope else []):
+            correlated.append(column.copy())
+            column.replace(SubqueryParam(this=exp.Literal.number(i)))
+
+        key = self._register_subquery(query)
+        parent = holder.parent
+
+        if isinstance(holder, exp.Exists):
+            return holder, SubqueryExists(this=key, expressions=correlated)
+
+        if isinstance(holder, exp.All):
+            return self._compile_subquery_cmp(parent, "ALL", key, correlated)
+
+        if isinstance(parent, exp.Any):
+            return self._compile_subquery_cmp(parent.parent, "ANY", key, correlated)
+
+        if isinstance(parent, exp.In):
+            return self._compile_subquery_cmp(parent, "ANY", key, correlated, op="EQ")
+
+        if isinstance(parent, exp.Exists):
+            return parent, SubqueryExists(this=key, expressions=correlated)
+
+        return holder, SubqueryScalar(this=key, expressions=correlated)
+
+    def _compile_subquery_cmp(self, comparison, quantifier, key, correlated, op=None):
+        if not isinstance(comparison, (exp.Binary, exp.In)):
+            raise ExecuteError(f"Unsupported {quantifier} subquery")
+
+        return comparison, SubqueryCmp(
+            this=comparison.this.copy(),
+            key=key,
+            op=exp.Literal.string(op or comparison.key.upper()),
+            quantifier=exp.Literal.string(quantifier),
+            expressions=correlated,
+        )
+
+    def _register_subquery(self, query):
+        """Plan `query` once, keyed on its text so repeated compilations share a result cache."""
+        sql = query.sql()
+        key = self._subquery_keys.get(sql)
+
+        if key is None:
+            key = self._subquery_keys[sql] = self._next_subquery_key()
+            self._subqueries[key] = (planner.Plan(query), {})
+
+        return exp.Literal.string(key)
+
+    def _run_subquery(self, key, args):
+        plan, cache = self._subqueries[key]
+
+        try:
+            if args in cache:
+                return cache[args]
+        except TypeError:  # an unhashable correlated value can't be memoized
+            return self._execute_subquery(plan, args)
+
+        cache[args] = table = self._execute_subquery(plan, args)
+        return table
+
+    def _execute_subquery(self, plan, args):
+        params = self.env["params"]
+        self.env["params"] = args
+        try:
+            return self.execute(plan)
+        finally:
+            self.env["params"] = params
+
+    def _subquery_exists(self, key, *args):
+        return bool(self._run_subquery(key, args).rows)
+
+    def _subquery_scalar(self, key, *args):
+        rows = self._single_column_rows(key, args)
+
+        if len(rows) > 1:
+            raise ExecuteError("More than one row returned by a subquery used as an expression")
+
+        return rows[0][0] if rows else None
+
+    def _subquery_cmp(self, this, key, op, quantifier, *args):
+        compare = self.env[op]
+        any_ = quantifier == "ANY"
+        null = False
+
+        for row in self._single_column_rows(key, args):
+            result = compare(this, row[0])
+
+            if result is None:
+                null = True
+            elif bool(result) is any_:
+                return any_
+
+        return None if null else not any_
+
+    def _single_column_rows(self, key, args):
+        table = self._run_subquery(key, args)
+
+        if len(table.columns) != 1:
+            raise ExecuteError(
+                f"Subquery used as an expression returned {len(table.columns)} columns"
+            )
+
+        return table.rows
 
     def generate_tuple(self, expressions):
         """Convert an array of SQL expressions into tuple of Python byte code."""

@@ -591,16 +591,78 @@ class TestExecutor(unittest.TestCase):
         self.assertEqual(executed.rows, [])
         self.assertEqual(executed.columns, ("id_alias", "sub_type"))
 
-    def test_unsupported_subqueries(self):
+    def test_subqueries(self):
+        """Subqueries the optimizer declines to rewrite are executed against duckdb's answer."""
+        schema = {
+            "x": {"a": "int"},
+            "y": {"b": "int"},
+            "e": {"b": "int"},
+            "n": {"b": "int"},
+        }
         tables = {
-            "x": [{"id": 1}, {"id": 2}, {"id": 3}],
-            "y": [{"id": 1}, {"id": 2}],
+            "x": [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 5}],
+            "y": [{"b": 2}, {"b": 3}],
+            "e": [],
+            "n": [{"b": 2}, {"b": None}],
         }
 
+        conn = duckdb.connect()
+        for table, columns in schema.items():
+            conn.execute(f"CREATE TABLE {table} ({', '.join(map(' '.join, columns.items()))})")
+            for row in tables[table]:
+                values = ", ".join("NULL" if v is None else str(v) for v in row.values())
+                conn.execute(f"INSERT INTO {table} VALUES ({values})")
+
+        def sort(rows):
+            return sorted(rows, key=lambda row: tuple((v is None, v) for v in row))
+
         for sql in (
-            "SELECT x.id FROM x WHERE EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id))",
-            "SELECT x.id FROM x WHERE NOT EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id))",
-            "SELECT x.id, (SELECT MAX(y.id) FROM y) AS max_id FROM x",
+            # correlated EXISTS the optimizer declines: disjunctive, negated, nested
+            "SELECT a FROM x WHERE NOT EXISTS (SELECT 1 FROM y WHERE b = x.a OR b = 3)",
+            "SELECT a FROM x WHERE EXISTS (SELECT 1 FROM y WHERE NOT b = x.a)",
+            "SELECT a FROM x WHERE NOT EXISTS (SELECT 1 FROM y WHERE NOT b = x.a)",
+            "SELECT a FROM x WHERE EXISTS (SELECT 1 FROM e)",
+            "SELECT a FROM x WHERE EXISTS "
+            "(SELECT 1 FROM y WHERE b = x.a AND EXISTS (SELECT 1 FROM n WHERE n.b = y.b))",
+            # scalar subqueries, including the zero-row NULL case
+            "SELECT a, (SELECT MAX(b) FROM y WHERE b > x.a) AS m FROM x",
+            "SELECT a, (SELECT b FROM e) AS m FROM x",
+            "SELECT a FROM x WHERE (SELECT COUNT(*) FROM y WHERE b > x.a) > 0",
+            # IN/NOT IN, where a NULL in the subquery makes the result NULL
+            "SELECT a FROM x WHERE a IN (SELECT b FROM y WHERE b = x.a OR b = 3)",
+            "SELECT a FROM x WHERE a NOT IN (SELECT b FROM y)",
+            "SELECT a FROM x WHERE a IN (SELECT b FROM n)",
+            "SELECT a FROM x WHERE a NOT IN (SELECT b FROM n)",
+            # ANY/ALL, including the empty subquery cases that invert
+            "SELECT a FROM x WHERE a > ANY (SELECT b FROM y)",
+            "SELECT a FROM x WHERE a > ALL (SELECT b FROM y)",
+            "SELECT a FROM x WHERE a > ANY (SELECT b FROM e)",
+            "SELECT a FROM x WHERE a > ALL (SELECT b FROM e)",
+            "SELECT a FROM x WHERE a > ANY (SELECT b FROM n)",
+            "SELECT a FROM x WHERE a > ALL (SELECT b FROM n)",
+            "SELECT a FROM x WHERE a = ANY (SELECT b FROM y WHERE b <> x.a OR b = 2)",
+            # subqueries outside a WHERE, and more than one in the same expression
+            "SELECT a, CASE WHEN EXISTS (SELECT 1 FROM y WHERE b = x.a OR b = 3) "
+            "THEN 'y' ELSE 'n' END AS c FROM x",
+            "SELECT (SELECT COUNT(*) FROM y WHERE b > x.a) + 1 AS c FROM x",
+            "SELECT a FROM x GROUP BY a HAVING MAX(a) > (SELECT MIN(b) FROM y)",
+            "SELECT a FROM x WHERE a IN (SELECT b FROM y UNION SELECT b FROM n)",
+            "SELECT a FROM x WHERE a IN (SELECT b FROM y WHERE b = x.a) "
+            "OR a IN (SELECT b FROM n WHERE b = x.a)",
+        ):
+            with self.subTest(sql):
+                expected = conn.execute(sql).fetchall()
+                self.assertEqual(sort(execute(sql, schema, tables=tables).rows), sort(expected))
+
+        conn.close()
+
+    def test_subquery_cardinality(self):
+        """A scalar subquery must yield a single row and column, as in duckdb and postgres."""
+        tables = {"x": [{"a": 1}], "y": [{"b": 2}, {"b": 3}]}
+
+        for sql in (
+            "SELECT a, (SELECT b FROM y) AS m FROM x",
+            "SELECT a, (SELECT b, b FROM y) AS m FROM x",
         ):
             with self.subTest(sql):
                 with self.assertRaises(ExecuteError):
