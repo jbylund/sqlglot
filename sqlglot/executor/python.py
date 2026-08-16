@@ -10,13 +10,16 @@ from sqlglot.executor.env import ENV
 from sqlglot.executor.table import RowReader, Table
 from sqlglot.generators.python import (
     PythonGenerator,
-    SubqueryCmp,
+    SubqueryArg,
+    SubqueryComparison,
     SubqueryExists,
-    SubqueryParam,
     SubqueryScalar,
 )
 from sqlglot.helper import name_sequence
 from sqlglot.optimizer.scope import build_scope
+
+# nodes that can hold a SELECT the optimizer declined to rewrite
+SUBQUERY_NODES = (exp.Subquery, exp.Exists, exp.All)
 
 
 class PythonExecutor:
@@ -24,14 +27,14 @@ class PythonExecutor:
         self.generator = Python().generator(identify=True, comments=False)
         self.env = {**ENV, **(env or {})}
         self.tables = tables or {}
-        self._subqueries = {}
-        self._subquery_keys = {}
-        self._next_subquery_key = name_sequence("_sq_")
+        self._subquery_plans = {}
+        self._plan_names_by_sql = {}
+        self._next_plan_name = name_sequence("_sq_")
         self.env.update(
-            SUBQUERY_CMP=self._subquery_cmp,
+            SUBQUERY_COMPARISON=self._subquery_comparison,
             SUBQUERY_EXISTS=self._subquery_exists,
             SUBQUERY_SCALAR=self._subquery_scalar,
-            params=(),
+            subquery_args=(),
         )
 
     def execute(self, plan):
@@ -83,90 +86,109 @@ class PythonExecutor:
         if not expression:
             return None
 
-        expression = self._extract_subqueries(expression)
+        expression = self._replace_subqueries(expression)
         sql = self.generator.generate(expression)
         return compile(sql, sql, "eval", optimize=2)
 
-    def _extract_subqueries(self, expression):
+    def _replace_subqueries(self, expression):
         """Replace the subqueries the optimizer left in place with calls into sub-plans.
 
-        Only the outermost subquery of each expression is replaced here. Its own steps come
-        back through `generate`, so any subquery nested inside it is handled on that pass.
+        A subquery nested inside another is left alone here. It is replaced when the enclosing
+        sub-plan's own steps come back through `generate`.
         """
-        if not expression.find(exp.Subquery, exp.Exists, exp.All):
+        if not expression.find(*SUBQUERY_NODES):
             return expression
 
+        # sub-plans are re-executed once per correlated value, re-generating their steps each
+        # time, so the plan's own tree must not be mutated
         expression = expression.copy()
 
         while True:
-            holder = expression.find(exp.Subquery, exp.Exists, exp.All)
+            # find is breadth-first, so this yields the outermost remaining subquery; rescan from
+            # the root because a replacement can splice in nodes that contain subqueries of their own
+            subquery = expression.find(*SUBQUERY_NODES)
 
-            if holder is None:
+            if subquery is None:
                 return expression
 
-            node, replacement = self._compile_subquery(holder)
+            target, replacement = self._compile_subquery(subquery)
 
-            if node is expression:
+            # a root node cannot be replaced in place: the projection may be only a subquery
+            if target is expression:
                 expression = replacement
             else:
-                node.replace(replacement)
+                target.replace(replacement)
 
-    def _compile_subquery(self, holder):
-        """Register a sub-plan for `holder` and return the node to replace and its replacement."""
-        query = holder.this
+    def _compile_subquery(self, subquery):
+        """Register a sub-plan for `subquery`, returning the node to replace and what replaces it."""
+        query = subquery.this.unnest()
         scope = build_scope(query)
-        correlated = []
+        outer_columns = []
 
-        # correlated columns are read from the outer row and passed in positionally
         for i, column in enumerate(scope.external_columns if scope else []):
-            correlated.append(column.copy())
-            column.replace(SubqueryParam(this=exp.Literal.number(i)))
+            outer_columns.append(column.copy())
+            column.replace(SubqueryArg(this=exp.Literal.number(i)))
 
-        key = self._register_subquery(query)
-        parent = holder.parent
+        plan = self._register_subquery(query)
+        parent = subquery.parent
 
-        if isinstance(holder, exp.Exists):
-            return holder, SubqueryExists(this=key, expressions=correlated)
+        if isinstance(subquery, exp.Exists):
+            return subquery, SubqueryExists(plan=plan, expressions=outer_columns)
 
-        if isinstance(holder, exp.All):
-            return self._compile_subquery_cmp(parent, "ALL", key, correlated)
+        # `x > ALL (SELECT ...)` parses to All(this=Select), with no Subquery of its own, while
+        # `x > ANY (SELECT ...)` parses to Any(this=Subquery(...)) -- hence the two branches
+        if isinstance(subquery, exp.All):
+            return self._compile_quantified(parent, "ALL", plan, outer_columns, query)
 
         if isinstance(parent, exp.Any):
-            return self._compile_subquery_cmp(parent.parent, "ANY", key, correlated)
+            return self._compile_quantified(parent.parent, "ANY", plan, outer_columns, query)
 
         if isinstance(parent, exp.In):
-            return self._compile_subquery_cmp(parent, "ANY", key, correlated, op="EQ")
+            # IN is ANY with an implicit equality
+            return self._compile_quantified(parent, "ANY", plan, outer_columns, query, op="EQ")
 
-        if isinstance(parent, exp.Exists):
-            return parent, SubqueryExists(this=key, expressions=correlated)
+        self._assert_single_column(query)
+        return subquery, SubqueryScalar(plan=plan, expressions=outer_columns)
 
-        return holder, SubqueryScalar(this=key, expressions=correlated)
-
-    def _compile_subquery_cmp(self, comparison, quantifier, key, correlated, op=None):
+    def _compile_quantified(self, comparison, quantifier, plan, outer_columns, query, op=None):
         if not isinstance(comparison, (exp.Binary, exp.In)):
-            raise ExecuteError(f"Unsupported {quantifier} subquery")
+            raise ExecuteError(f"Unsupported {quantifier} subquery: expected a comparison")
 
-        return comparison, SubqueryCmp(
+        self._assert_single_column(query)
+
+        return comparison, SubqueryComparison(
             this=comparison.this.copy(),
-            key=key,
+            plan=plan,
+            # Expression.key is the snake-cased class name, which doubles as the ENV function name
             op=exp.Literal.string(op or comparison.key.upper()),
             quantifier=exp.Literal.string(quantifier),
-            expressions=correlated,
+            expressions=outer_columns,
         )
 
+    @staticmethod
+    def _assert_single_column(query):
+        if len(query.selects) != 1:
+            raise ExecuteError(
+                f"Subquery used as an expression returned {len(query.selects)} columns"
+            )
+
     def _register_subquery(self, query):
-        """Plan `query` once, keyed on its text so repeated compilations share a result cache."""
+        """Plan `query` once, keyed on its text so repeated compilations share a result cache.
+
+        Returns a string literal naming the sub-plan.
+        """
         sql = query.sql()
-        key = self._subquery_keys.get(sql)
+        name = self._plan_names_by_sql.get(sql)
 
-        if key is None:
-            key = self._subquery_keys[sql] = self._next_subquery_key()
-            self._subqueries[key] = (planner.Plan(query), {})
+        if name is None:
+            name = self._plan_names_by_sql[sql] = self._next_plan_name()
+            self._subquery_plans[name] = (planner.Plan(query), {})
 
-        return exp.Literal.string(key)
+        return exp.Literal.string(name)
 
-    def _run_subquery(self, key, args):
-        plan, cache = self._subqueries[key]
+    def _subquery_table(self, plan_name, args):
+        """Run the sub-plan for these correlated values, reusing an earlier result if there is one."""
+        plan, cache = self._subquery_plans[plan_name]
 
         try:
             if args in cache:
@@ -178,48 +200,42 @@ class PythonExecutor:
         return table
 
     def _execute_subquery(self, plan, args):
-        params = self.env["params"]
-        self.env["params"] = args
+        # Context copies env when it is built, so the sub-plan's contexts see these args while
+        # contexts already mid-evaluation keep theirs; nesting rides on the Python call stack
+        outer_args = self.env["subquery_args"]
+        self.env["subquery_args"] = args
         try:
             return self.execute(plan)
         finally:
-            self.env["params"] = params
+            self.env["subquery_args"] = outer_args
 
-    def _subquery_exists(self, key, *args):
-        return bool(self._run_subquery(key, args).rows)
+    def _subquery_exists(self, plan_name, *args):
+        return bool(self._subquery_table(plan_name, args).rows)
 
-    def _subquery_scalar(self, key, *args):
-        rows = self._single_column_rows(key, args)
+    def _subquery_scalar(self, plan_name, *args):
+        rows = self._subquery_table(plan_name, args).rows
 
         if len(rows) > 1:
             raise ExecuteError("More than one row returned by a subquery used as an expression")
 
         return rows[0][0] if rows else None
 
-    def _subquery_cmp(self, this, key, op, quantifier, *args):
+    def _subquery_comparison(self, value, plan_name, op, quantifier, *args):
         compare = self.env[op]
-        any_ = quantifier == "ANY"
-        null = False
+        is_any = quantifier == "ANY"
+        saw_null = False
 
-        for row in self._single_column_rows(key, args):
-            result = compare(this, row[0])
+        for row in self._subquery_table(plan_name, args).rows:
+            result = compare(value, row[0])
 
             if result is None:
-                null = True
-            elif bool(result) is any_:
-                return any_
+                saw_null = True
+            # ANY short-circuits true on the first match, ALL false on the first mismatch
+            elif bool(result) is is_any:
+                return is_any
 
-        return None if null else not any_
-
-    def _single_column_rows(self, key, args):
-        table = self._run_subquery(key, args)
-
-        if len(table.columns) != 1:
-            raise ExecuteError(
-                f"Subquery used as an expression returned {len(table.columns)} columns"
-            )
-
-        return table.rows
+        # a row that compared NULL leaves the answer unknown
+        return None if saw_null else not is_any
 
     def generate_tuple(self, expressions):
         """Convert an array of SQL expressions into tuple of Python byte code."""
