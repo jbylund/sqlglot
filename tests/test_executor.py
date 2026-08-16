@@ -656,6 +656,11 @@ class TestExecutor(unittest.TestCase):
             "SELECT a FROM x WHERE (SELECT MIN(b) FROM y WHERE b > x.a) IN (1, 2)",
             # SOME is ANY, and both hold the SELECT directly with no Subquery node
             "SELECT a FROM x WHERE a > SOME (SELECT b FROM y)",
+            # correlation reaching past the immediately enclosing subquery
+            "SELECT a FROM x WHERE EXISTS "
+            "(SELECT 1 FROM y WHERE b = 99 OR EXISTS (SELECT 1 FROM n WHERE n.b = x.a OR n.b = y.b))",
+            "SELECT a FROM x WHERE EXISTS "
+            "(SELECT 1 FROM y WHERE b = 99 OR EXISTS (SELECT 1 FROM n WHERE n.b = x.a OR n.b = 99))",
             # a sub-plan has to carry the enclosing CTEs, including ones the optimizer emits
             "WITH c AS (SELECT b FROM y) SELECT a FROM x WHERE a IN (SELECT b FROM c) "
             "AND NOT EXISTS (SELECT 1 FROM c WHERE b = x.a OR b = 99)",

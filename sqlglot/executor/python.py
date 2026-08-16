@@ -33,7 +33,7 @@ class PythonExecutor:
             SUBQUERY_COMPARISON=self._subquery_comparison,
             SUBQUERY_EXISTS=self._subquery_exists,
             SUBQUERY_SCALAR=self._subquery_scalar,
-            subquery_args=(),
+            subquery_args={},
         )
 
     def execute(self, plan):
@@ -134,11 +134,18 @@ class PythonExecutor:
         scope = build_scope(query)
         outer_columns = []
 
-        for i, column in enumerate(scope.external_columns if scope else []):
-            outer_columns.append(column.copy())
-            column.replace(exp.var(f"subquery_args[{i}]"))
+        # Correlated columns are keyed by name rather than position: a subquery may reference a
+        # column belonging to a grandparent, in which case this rewrite lands inside a subquery
+        # that is compiled later and would renumber it.
+        arg_names = []
 
-        plan = self._register_subquery(query)
+        for column in scope.external_columns if scope else []:
+            name = f"{column.table}.{column.name}"
+            arg_names.append(name)
+            outer_columns.append(column.copy())
+            column.replace(exp.var(f"subquery_args[{name!r}]"))
+
+        plan = self._register_subquery(query, arg_names)
         parent = subquery.parent
 
         if isinstance(subquery, exp.Exists):
@@ -173,7 +180,7 @@ class PythonExecutor:
             expressions=outer_columns,
         )
 
-    def _register_subquery(self, query):
+    def _register_subquery(self, query, arg_names):
         """Plan `query` once, keyed on its text so repeated compilations share a result cache.
 
         Returns a string literal naming the sub-plan.
@@ -187,16 +194,22 @@ class PythonExecutor:
 
         if name is None:
             name = self._plan_names_by_sql[sql] = f"_sq_{len(self._subquery_plans)}"
-            self._subquery_plans[name] = (planner.Plan(query), {})
+            self._subquery_plans[name] = (planner.Plan(query), {}, tuple(arg_names))
 
         return exp.Literal.string(name)
 
     def _subquery_table(self, plan_name, args):
         """Run the sub-plan for these correlated values, reusing an earlier result if there is one."""
-        plan, cache = self._subquery_plans[plan_name]
+        plan, cache, arg_names = self._subquery_plans[plan_name]
+
+        # Values named by an enclosing sub-plan stay in scope, so they are merged in rather than
+        # replaced, and they form part of the cache key -- the result depends on them too.
+        outer_args = self.env["subquery_args"]
+        merged = {**outer_args, **dict(zip(arg_names, args))}
+        key = tuple(sorted(merged.items()))
 
         try:
-            return cache[args]
+            return cache[key]
         except KeyError:
             pass
         except TypeError:  # an unhashable correlated value can't be memoized
@@ -204,15 +217,14 @@ class PythonExecutor:
 
         # Context copies env when it is built, so the sub-plan's contexts see these args while
         # contexts already mid-evaluation keep theirs; nesting rides on the Python call stack
-        outer_args = self.env["subquery_args"]
-        self.env["subquery_args"] = args
+        self.env["subquery_args"] = merged
         try:
             table = self.execute(plan)
         finally:
             self.env["subquery_args"] = outer_args
 
         if cache is not None:
-            cache[args] = table
+            cache[key] = table
 
         return table
 
