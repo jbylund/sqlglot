@@ -13,6 +13,10 @@ from collections.abc import Iterator, Sequence, Iterable
 class Plan:
     def __init__(self, expression: exp.Expr) -> None:
         self.expression: exp.Expr = expression.copy()
+        # from_expression rewrites the tree it walks, so snapshot the CTEs first: they are the
+        # only part a caller may need to plan again on its own
+        with_: exp.With | None = self.expression.args.get("with_")
+        self.ctes: exp.With | None = with_.copy() if with_ is not None else None
         self.root: Step = Step.from_expression(self.expression)
         self._dag: dict[Step, set[Step]] = {}
 

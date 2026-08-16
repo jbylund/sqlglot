@@ -28,6 +28,7 @@ class PythonExecutor:
         self.tables = tables or {}
         self._subquery_plans = {}
         self._plan_names_by_sql = {}
+        self._ctes = None
         self.env.update(
             SUBQUERY_COMPARISON=self._subquery_comparison,
             SUBQUERY_EXISTS=self._subquery_exists,
@@ -36,6 +37,16 @@ class PythonExecutor:
         )
 
     def execute(self, plan):
+        # a sub-plan is built from the subquery alone, so it has to carry the enclosing CTEs with
+        # it or a reference to one resolves as a table that does not exist
+        outer_ctes = self._ctes
+        self._ctes = plan.ctes
+        try:
+            return self._execute(plan)
+        finally:
+            self._ctes = outer_ctes
+
+    def _execute(self, plan):
         finished = set()
         queue = set(plan.leaves)
         contexts = {}
@@ -142,8 +153,9 @@ class PythonExecutor:
         if isinstance(subquery, (exp.All, exp.Any)):
             return self._compile_quantified(parent, subquery.key.upper(), plan, outer_columns)
 
-        if isinstance(parent, exp.In):
-            # IN is ANY with an implicit equality
+        # Only the row source of an IN is a quantified comparison, and it is ANY with an implicit
+        # equality. A subquery on the left of IN, or among its values, is an ordinary scalar.
+        if isinstance(parent, exp.In) and subquery is parent.args.get("query"):
             return self._compile_quantified(parent, "ANY", plan, outer_columns, op="EQ")
 
         return subquery, SubqueryScalar(plan=plan, expressions=outer_columns)
@@ -166,6 +178,10 @@ class PythonExecutor:
 
         Returns a string literal naming the sub-plan.
         """
+        if self._ctes is not None and not query.args.get("with_"):
+            query = query.copy()
+            query.set("with_", self._ctes.copy())
+
         sql = query.sql()
         name = self._plan_names_by_sql.get(sql)
 

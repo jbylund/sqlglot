@@ -649,6 +649,20 @@ class TestExecutor(unittest.TestCase):
             "SELECT a FROM x WHERE a IN (SELECT b FROM y UNION SELECT b FROM n)",
             "SELECT a FROM x WHERE a IN (SELECT b FROM y WHERE b = x.a) "
             "OR a IN (SELECT b FROM n WHERE b = x.a)",
+            # a subquery on the left of IN, or among its values, is a scalar rather than the
+            # row source, so the other values must survive
+            "SELECT a FROM x WHERE a IN (5, (SELECT MIN(b) FROM y WHERE b > x.a))",
+            "SELECT a FROM x WHERE a NOT IN (1, (SELECT MIN(b) FROM y))",
+            "SELECT a FROM x WHERE (SELECT MIN(b) FROM y WHERE b > x.a) IN (1, 2)",
+            # SOME is ANY, and both hold the SELECT directly with no Subquery node
+            "SELECT a FROM x WHERE a > SOME (SELECT b FROM y)",
+            # a sub-plan has to carry the enclosing CTEs, including ones the optimizer emits
+            "WITH c AS (SELECT b FROM y) SELECT a FROM x WHERE a IN (SELECT b FROM c) "
+            "AND NOT EXISTS (SELECT 1 FROM c WHERE b = x.a OR b = 99)",
+            "WITH w AS (SELECT b, COUNT(*) AS k FROM y GROUP BY b) "
+            "SELECT a FROM x WHERE EXISTS (SELECT 1 FROM w WHERE w.b = x.a OR w.k = 2)",
+            "SELECT a FROM x WHERE EXISTS "
+            "(SELECT 1 FROM y WHERE b = x.a OR EXISTS (SELECT 1 FROM n WHERE n.b = x.a))",
             # redundant parentheses put a Subquery between the holder and the SELECT
             "SELECT a FROM x WHERE EXISTS ((SELECT 1 FROM y WHERE b = x.a OR b = 3))",
             "SELECT a FROM x WHERE NOT EXISTS (((SELECT 1 FROM y WHERE b = x.a)))",
