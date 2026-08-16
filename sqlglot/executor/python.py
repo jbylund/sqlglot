@@ -135,26 +135,29 @@ class PythonExecutor:
         if isinstance(subquery, exp.Exists):
             return subquery, SubqueryExists(plan=plan, expressions=outer_columns)
 
+        # every remaining use reads or compares a value, so the subquery must yield one column
+        if len(query.selects) != 1:
+            raise ExecuteError(
+                f"Subquery used as an expression returned {len(query.selects)} columns"
+            )
+
         # `x > ALL (SELECT ...)` parses to All(this=Select), with no Subquery of its own, while
         # `x > ANY (SELECT ...)` parses to Any(this=Subquery(...)) -- hence the two branches
         if isinstance(subquery, exp.All):
-            return self._compile_quantified(parent, "ALL", plan, outer_columns, query)
+            return self._compile_quantified(parent, "ALL", plan, outer_columns)
 
         if isinstance(parent, exp.Any):
-            return self._compile_quantified(parent.parent, "ANY", plan, outer_columns, query)
+            return self._compile_quantified(parent.parent, "ANY", plan, outer_columns)
 
         if isinstance(parent, exp.In):
             # IN is ANY with an implicit equality
-            return self._compile_quantified(parent, "ANY", plan, outer_columns, query, op="EQ")
+            return self._compile_quantified(parent, "ANY", plan, outer_columns, op="EQ")
 
-        self._assert_single_column(query)
         return subquery, SubqueryScalar(plan=plan, expressions=outer_columns)
 
-    def _compile_quantified(self, comparison, quantifier, plan, outer_columns, query, op=None):
+    def _compile_quantified(self, comparison, quantifier, plan, outer_columns, op=None):
         if not isinstance(comparison, (exp.Binary, exp.In)):
             raise ExecuteError(f"Unsupported {quantifier} subquery: expected a comparison")
-
-        self._assert_single_column(query)
 
         return comparison, SubqueryComparison(
             this=comparison.this.copy(),
@@ -164,13 +167,6 @@ class PythonExecutor:
             quantifier=exp.Literal.string(quantifier),
             expressions=outer_columns,
         )
-
-    @staticmethod
-    def _assert_single_column(query):
-        if len(query.selects) != 1:
-            raise ExecuteError(
-                f"Subquery used as an expression returned {len(query.selects)} columns"
-            )
 
     def _register_subquery(self, query):
         """Plan `query` once, keyed on its text so repeated compilations share a result cache.

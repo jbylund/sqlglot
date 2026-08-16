@@ -649,6 +649,12 @@ class TestExecutor(unittest.TestCase):
             "SELECT a FROM x WHERE a IN (SELECT b FROM y UNION SELECT b FROM n)",
             "SELECT a FROM x WHERE a IN (SELECT b FROM y WHERE b = x.a) "
             "OR a IN (SELECT b FROM n WHERE b = x.a)",
+            # redundant parentheses put a Subquery between the holder and the SELECT
+            "SELECT a FROM x WHERE EXISTS ((SELECT 1 FROM y WHERE b = x.a OR b = 3))",
+            "SELECT a FROM x WHERE NOT EXISTS (((SELECT 1 FROM y WHERE b = x.a)))",
+            "SELECT a FROM x WHERE a > ANY ((SELECT b FROM y WHERE b <> x.a))",
+            "SELECT a FROM x WHERE a IN ((SELECT b FROM y WHERE b = x.a OR b = 3))",
+            "SELECT a, ((SELECT MAX(b) FROM y WHERE b > x.a)) AS m FROM x",
         ):
             with self.subTest(sql):
                 expected = conn.execute(sql).fetchall()
@@ -658,15 +664,19 @@ class TestExecutor(unittest.TestCase):
 
     def test_subquery_cardinality(self):
         """A scalar subquery must yield a single row and column, as in duckdb and postgres."""
-        tables = {"x": [{"a": 1}], "y": [{"b": 2}, {"b": 3}]}
-
-        for sql in (
-            "SELECT a, (SELECT b FROM y) AS m FROM x",
-            "SELECT a, (SELECT b, b FROM y) AS m FROM x",
+        for sql, tables in (
+            (
+                "SELECT a, (SELECT b FROM y) AS m FROM x",
+                {"x": [{"a": 1}], "y": [{"b": 2}, {"b": 3}]},
+            ),
+            ("SELECT a, (SELECT b, b FROM y) AS m FROM x", {"x": [{"a": 1}], "y": [{"b": 2}]}),
+            # the column count is a property of the query, so it is rejected even when no
+            # outer row would have evaluated it -- duckdb reports this as a binder error
+            ("SELECT a, (SELECT b, b FROM y) AS m FROM x", {"x": [], "y": [{"b": 2}]}),
         ):
             with self.subTest(sql):
                 with self.assertRaises(ExecuteError):
-                    execute(sql, tables=tables)
+                    execute(sql, schema={"x": {"a": "int"}, "y": {"b": "int"}}, tables=tables)
 
     def test_correlated_count(self):
         tables = {
