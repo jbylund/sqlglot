@@ -84,9 +84,11 @@ class TableIter:
         return self
 
     def __next__(self) -> RowReader:
-        self.index += 1
-        if self.index < len(self.table):
-            return self.table[self.index]
+        index = self.index + 1
+        self.index = index
+        table = self.table
+        if index < len(table.rows):
+            return table[index]
         raise StopIteration
 
 

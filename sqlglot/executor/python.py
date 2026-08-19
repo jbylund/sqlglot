@@ -257,6 +257,7 @@ class PythonExecutor:
         scope = context.row_readers
         rows = sink.rows
         width = len(sink.columns)
+        _len = len
 
         if count >= limit:
             return sink
@@ -266,7 +267,7 @@ class PythonExecutor:
                 continue
 
             row = projections(scope) if has_projections else reader.row
-            assert len(row) == width
+            assert _len(row) == width
             rows.append(row)
 
             count += 1
