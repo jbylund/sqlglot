@@ -71,9 +71,10 @@ class Context:
 
     def __iter__(self):
         self.env["scope"] = self.row_readers
+        readers = [(table, table.reader) for table in self.tables.values()]
         for i in range(len(self.table.rows)):
-            for table in self.tables.values():
-                reader = table[i]
+            for table, reader in readers:
+                reader.row = table.rows[i]
             yield reader, self
 
     def table_iter(self, table: str) -> TableIter:
