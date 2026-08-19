@@ -253,11 +253,13 @@ class PythonExecutor:
         condition = self.generate(step.condition)
         projections = self.generate_tuple(step.projections)
         has_projections = bool(step.projections)
+        limit = step.offset + step.limit
+        count = 0
+
+        if count >= limit:
+            return sink
 
         for reader in table_iter:
-            if len(sink) >= step.offset + step.limit:
-                break
-
             if condition and not context.eval(condition):
                 continue
 
@@ -265,6 +267,11 @@ class PythonExecutor:
                 sink.append(context.eval_tuple(projections))
             else:
                 sink.append(reader.row)
+
+            count += 1
+
+            if count >= limit:
+                break
 
         return sink
 
