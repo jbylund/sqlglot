@@ -86,13 +86,13 @@ class PythonExecutor:
         return contexts[root].tables[root.name]
 
     def generate(self, expression):
-        """Convert a SQL expression into literal Python code and compile it into bytecode."""
+        """Convert a SQL expression into a callable taking the scope to evaluate against."""
         if not expression:
             return None
 
         expression = self._replace_subqueries(expression)
         sql = self.generator.generate(expression)
-        return compile(sql, sql, "eval", optimize=2)
+        return eval(compile(f"lambda scope: ({sql})", sql, "eval", optimize=2), self.env)
 
     def _replace_subqueries(self, expression):
         if not expression.find(*SUBQUERY_NODES):
@@ -214,10 +214,15 @@ class PythonExecutor:
         return None if saw_null else not is_any
 
     def generate_tuple(self, expressions):
-        """Convert an array of SQL expressions into tuple of Python byte code."""
+        """Convert an array of SQL expressions into a single tuple-valued callable."""
         if not expressions:
             return tuple()
-        return tuple(self.generate(expression) for expression in expressions)
+        sqls = [
+            self.generator.generate(self._replace_subqueries(expression))
+            for expression in expressions
+        ]
+        sql = "(" + ",".join(f"({s})" for s in sqls) + ",)"
+        return eval(compile(f"lambda scope: {sql}", sql, "eval", optimize=2), self.env)
 
     def context(self, tables):
         return Context(tables, env=self.env, outer=self._outer_scope)

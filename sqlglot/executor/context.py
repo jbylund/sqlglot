@@ -43,10 +43,10 @@ class Context:
         self.env = {**ENV, **(env or {}), "scope": self.row_readers}
 
     def eval(self, code):
-        return eval(code, self.env)
+        return code(self.env["scope"])
 
     def eval_tuple(self, codes):
-        return tuple(self.eval(code) for code in codes)
+        return codes(self.env["scope"]) if codes else ()
 
     @property
     def table(self) -> Table:
