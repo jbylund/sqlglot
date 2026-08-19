@@ -1,5 +1,4 @@
 import collections
-import itertools
 import math
 
 from sqlglot import exp, planner, tokens
@@ -376,30 +375,34 @@ class PythonExecutor:
     def hash_join(self, join, source_context, join_context, condition, condition_context):
         source_key = self.generate_tuple(join["source_key"])
         join_key = self.generate_tuple(join["join_key"])
-        results = collections.defaultdict(lambda: ([], []))
+        source_groups = collections.defaultdict(list)
+        join_groups = collections.defaultdict(list)
 
         for index, (reader, ctx) in enumerate(source_context):
             key = ctx.eval_tuple(source_key)
-            if all(value is not None for value in key):
-                results[key][0].append((index, reader.row))
+            if None not in key:
+                source_groups[key].append((index, reader.row))
         for index, (reader, ctx) in enumerate(join_context):
             key = ctx.eval_tuple(join_key)
-            if all(value is not None for value in key):
-                results[key][1].append((index, reader.row))
+            if None not in key:
+                join_groups[key].append((index, reader.row))
 
         table = Table(source_context.columns + join_context.columns)
         matched_source = set()
         matched_join = set()
 
-        for source_group, join_group in results.values():
-            for (source_index, source_row), (join_index, join_row) in itertools.product(
-                source_group, join_group
-            ):
-                row = source_row + join_row
-                if self._join_matches(row, condition, condition_context):
-                    table.append(row)
-                    matched_source.add(source_index)
-                    matched_join.add(join_index)
+        for key, source_group in source_groups.items():
+            join_group = join_groups.get(key)
+            if not join_group:
+                continue
+
+            for source_index, source_row in source_group:
+                for join_index, join_row in join_group:
+                    row = source_row + join_row
+                    if self._join_matches(row, condition, condition_context):
+                        table.append(row)
+                        matched_source.add(source_index)
+                        matched_join.add(join_index)
 
         self._append_unmatched_join_rows(
             table,
