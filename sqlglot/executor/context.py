@@ -46,7 +46,7 @@ class Context:
         return code(self.env["scope"])
 
     def eval_tuple(self, codes):
-        return codes(self.env["scope"]) if codes else ()
+        return codes(self.env["scope"])
 
     @property
     def table(self) -> Table:

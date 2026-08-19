@@ -215,13 +215,11 @@ class PythonExecutor:
 
     def generate_tuple(self, expressions):
         """Convert an array of SQL expressions into a single tuple-valued callable."""
-        if not expressions:
-            return tuple()
         sqls = [
             self.generator.generate(self._replace_subqueries(expression))
             for expression in expressions
         ]
-        sql = "(" + ",".join(f"({s})" for s in sqls) + ",)"
+        sql = "(" + ",".join(f"({s})" for s in sqls) + ",)" if sqls else "()"
         return eval(compile(f"lambda scope: {sql}", sql, "eval", optimize=2), self.env)
 
     def context(self, tables):
@@ -254,6 +252,7 @@ class PythonExecutor:
         sink = self.table(step.projections if step.projections else context.columns)
         condition = self.generate(step.condition)
         projections = self.generate_tuple(step.projections)
+        has_projections = bool(step.projections)
 
         for reader in table_iter:
             if len(sink) >= step.offset + step.limit:
@@ -262,7 +261,7 @@ class PythonExecutor:
             if condition and not context.eval(condition):
                 continue
 
-            if projections:
+            if has_projections:
                 sink.append(context.eval_tuple(projections))
             else:
                 sink.append(reader.row)
@@ -429,7 +428,7 @@ class PythonExecutor:
         aggregations = self.generate_tuple(step.aggregations)
         operands = self.generate_tuple(step.operands)
 
-        if operands:
+        if step.operands:
             operand_table = Table(self.table(step.operands).columns)
 
             for reader, ctx in context:
@@ -481,7 +480,7 @@ class PythonExecutor:
                 if i == length - 1:
                     context.set_range(start, end - 1)
                     add_row()
-        elif step.limit > 0 and not group_by:
+        elif step.limit > 0 and not step.group:
             context.set_range(0, 0)
             table.append(context.eval_tuple(aggregations))
 
