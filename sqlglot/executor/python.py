@@ -254,18 +254,20 @@ class PythonExecutor:
         has_projections = bool(step.projections)
         limit = step.offset + step.limit
         count = 0
+        scope = context.row_readers
+        rows = sink.rows
+        width = len(sink.columns)
 
         if count >= limit:
             return sink
 
         for reader in table_iter:
-            if condition and not context.eval(condition):
+            if condition and not condition(scope):
                 continue
 
-            if has_projections:
-                sink.append(context.eval_tuple(projections))
-            else:
-                sink.append(reader.row)
+            row = projections(scope) if has_projections else reader.row
+            assert len(row) == width
+            rows.append(row)
 
             count += 1
 
