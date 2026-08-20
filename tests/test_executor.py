@@ -832,6 +832,29 @@ class TestExecutor(unittest.TestCase):
                 with self.assertRaises(ExecuteError):
                     execute(sql, schema={"x": {"a": "int"}, "y": {"b": "int"}}, tables=tables)
 
+    def test_planner_preserves_subquery_wrapper(self):
+        schema = {"x": {"a": "int"}, "y": {"b": "int"}, "z": {"c": "int"}}
+        tables = {
+            "x": [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 5}],
+            "y": [{"b": 2}, {"b": 3}],
+            "z": [{"c": 1}, {"c": 2}],
+        }
+        cases = (
+            ("SELECT SUM((SELECT COUNT(*) FROM y WHERE b > x.a)) AS t FROM x", [(3,)]),
+            (
+                "SELECT x.a FROM x JOIN z ON z.c = (SELECT MIN(b) FROM y WHERE b >= x.a)",
+                [(1,), (2,)],
+            ),
+            (
+                "SELECT a FROM x WHERE (SELECT MIN(b) FROM y) IN (SELECT b FROM y)",
+                [(1,), (2,), (3,), (5,)],
+            ),
+        )
+
+        for sql, expected in cases:
+            with self.subTest(sql):
+                self.assertCountEqual(execute(sql, schema, tables=tables).rows, expected)
+
     def test_correlated_count(self):
         tables = {
             "parts": [{"pnum": 0, "qoh": 1}],
