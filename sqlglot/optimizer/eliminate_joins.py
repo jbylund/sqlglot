@@ -131,6 +131,10 @@ def _is_limit_1(scope: Scope) -> bool:
     return limit is not None and limit.expression.this == "1"
 
 
+def unnest_operand(expression: exp.Expr) -> exp.Expr:
+    return expression if isinstance(expression, exp.Subquery) else expression.unnest()
+
+
 def join_condition(join: exp.Join) -> tuple[list[exp.Expr], list[exp.Expr], exp.Expr]:
     """
     Extract the join condition from a join expression.
@@ -147,7 +151,7 @@ def join_condition(join: exp.Join) -> tuple[list[exp.Expr], list[exp.Expr], exp.
     join_key: list[exp.Expr] = []
 
     def extract_condition(condition: exp.Expr) -> None:
-        left, right = condition.unnest_operands()
+        left, right = (unnest_operand(arg) for arg in condition.iter_expressions())
         left_tables = exp.column_table_names(left)
         right_tables = exp.column_table_names(right)
 
