@@ -826,6 +826,10 @@ class TestExecutor(unittest.TestCase):
             # the column count is a property of the query, so it is rejected even when no
             # outer row would have evaluated it -- duckdb reports this as a binder error
             ("SELECT a, (SELECT b, b FROM y) AS m FROM x", {"x": [], "y": [{"b": 2}]}),
+            (
+                "SELECT a FROM x WHERE a > (SELECT b FROM y)",
+                {"x": [{"a": 1}, {"a": 5}], "y": [{"b": 2}, {"b": 3}]},
+            ),
         ):
             with self.subTest(sql):
                 with self.assertRaises(ExecuteError):
