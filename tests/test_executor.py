@@ -796,6 +796,17 @@ class TestExecutor(unittest.TestCase):
 
         self.assertEqual(plan.expression.sql(), before)
 
+    def test_parenthesized_negated_in_is_not_unnested(self):
+        # NOT IN's three-valued NULL semantics apply just as much when the negation is
+        # spelled as a parenthesized `NOT (x IN (...))` rather than bare `x NOT IN (...)`
+        schema = {"x": {"a": "int"}, "tbl_with_null": {"b": "int"}}
+        tables = {
+            "x": [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 5}],
+            "tbl_with_null": [{"b": 2}, {"b": None}],
+        }
+        sql = "SELECT a FROM x WHERE NOT (a IN (SELECT b FROM tbl_with_null))"
+        self.assertCountEqual(execute(sql, schema, tables=tables).rows, [])
+
     def test_subquery_cardinality(self):
         # a scalar subquery must yield a single row and column, as in duckdb and postgres
         for sql, tables in (

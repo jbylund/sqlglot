@@ -126,6 +126,10 @@ SELECT * FROM x WHERE NOT x.a IN (SELECT y.a AS a FROM y);
 SELECT * FROM x WHERE x.a NOT IN (SELECT y.a AS a FROM y UNION ALL SELECT z.a AS a FROM z);
 SELECT * FROM x WHERE NOT x.a IN (SELECT y.a AS a FROM y UNION ALL SELECT z.a AS a FROM z);
 
+# title: parenthesized negation of IN is not unnested either -- the negation guard looks through Paren
+SELECT * FROM x WHERE NOT (x.a IN (SELECT y.a AS a FROM y));
+SELECT * FROM x WHERE NOT (x.a IN (SELECT y.a AS a FROM y));
+
 # title: correlated EXISTS with negated equality is not unnested
 SELECT x.id FROM x WHERE EXISTS (SELECT 1 FROM y WHERE NOT (y.id = x.id));
 SELECT x.id FROM x WHERE EXISTS(SELECT 1 FROM y WHERE NOT (y.id = x.id));

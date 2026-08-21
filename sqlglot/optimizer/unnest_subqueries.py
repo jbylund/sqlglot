@@ -55,7 +55,7 @@ def unnest(select, parent_select, next_alias_name):
         or not parent_select.args.get("from_")
         # NOT IN has three-valued semantics that the LEFT-JOIN-anti rewrite doesn't preserve:
         # a NULL in the subquery makes NOT IN evaluate to NULL for every outer row.
-        or (isinstance(predicate, exp.In) and isinstance(predicate.parent, exp.Not))
+        or (isinstance(predicate, exp.In) and _is_negated(predicate))
     ):
         return
 
@@ -326,6 +326,16 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
 
 def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
+
+
+def _is_negated(expression: exp.Expr) -> bool:
+    negated = False
+    node = expression.parent
+    while isinstance(node, (exp.Paren, exp.Not)):
+        if isinstance(node, exp.Not):
+            negated = not negated
+        node = node.parent
+    return negated
 
 
 def _other_operand(expression: object) -> exp.Expr | None:
