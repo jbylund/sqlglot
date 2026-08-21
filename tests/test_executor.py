@@ -815,6 +815,21 @@ class TestExecutor(unittest.TestCase):
         sql = "SELECT a FROM x WHERE a NOT IN (SELECT b FROM y WHERE y.c = x.c)"
         self.assertEqual(execute(sql, schema, tables=tables).rows, [(1,), (3,)])
 
+    def test_correlated_in_over_union_is_not_unnested(self):
+        # each UNION arm is correlated to a different outer column; decorrelating one arm
+        # alone would decide the predicate using only that arm and drop the other
+        schema = {"x": {"a": "int"}, "y": {"b": "int"}, "z": {"c": "int"}}
+        tables = {
+            "x": [{"a": 1}, {"a": 2}, {"a": 3}, {"a": 5}],
+            "y": [{"b": 2}],
+            "z": [{"c": 5}],
+        }
+        sql = (
+            "SELECT a FROM x WHERE a IN "
+            "(SELECT b FROM y WHERE b = x.a UNION SELECT c FROM z WHERE c = x.a)"
+        )
+        self.assertCountEqual(execute(sql, schema, tables=tables).rows, [(2,), (5,)])
+
     def test_subquery_cardinality(self):
         # a scalar subquery must yield a single row and column, as in duckdb and postgres
         for sql, tables in (
