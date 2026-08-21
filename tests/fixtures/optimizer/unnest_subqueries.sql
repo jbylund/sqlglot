@@ -144,3 +144,7 @@ SELECT x.id FROM x WHERE NOT EXISTS(SELECT 1 FROM y WHERE NOT (y.id = x.id));
 # title: positive equality with NOT operand is unnested
 SELECT x.flag FROM x WHERE EXISTS (SELECT 1 FROM y WHERE y.flag = (NOT x.flag));
 SELECT x.flag FROM x LEFT JOIN (SELECT y.flag AS _u_1 FROM y WHERE TRUE GROUP BY y.flag) AS _u_0 ON _u_0._u_1 = (NOT x.flag) WHERE NOT _u_0._u_1 IS NULL;
+
+# title: correlated IN over a UNION arm is not unnested: decorrelating one arm alone would drop the others
+SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y WHERE y.a = x.a UNION SELECT z.a AS a FROM z WHERE z.a = x.a);
+SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y WHERE y.a = x.a UNION SELECT z.a AS a FROM z WHERE z.a = x.a);
