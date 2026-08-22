@@ -146,6 +146,11 @@ def unnest(select, parent_select, next_alias_name):
 
 
 def decorrelate(select, parent_select, external_columns, next_alias_name):
+    # Rewriting one arm of a SetOperation alone can't produce a correct join: the other
+    # arm(s) would be dropped from the correlated comparison entirely.
+    if isinstance(select.parent, exp.SetOperation):
+        return
+
     where = select.args.get("where")
 
     if not where or where.find(exp.Or) or select.find(exp.Limit, exp.Offset):
