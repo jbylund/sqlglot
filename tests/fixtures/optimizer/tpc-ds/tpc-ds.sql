@@ -898,15 +898,9 @@ HAVING Count(*) >= 10
 ORDER  BY cnt
 LIMIT 100;
 WITH "_u_0" AS (
-  SELECT DISTINCT
-    "date_dim"."d_month_seq" AS "d_month_seq"
-  FROM "date_dim" AS "date_dim"
-  WHERE
-    "date_dim"."d_moy" = 7 AND "date_dim"."d_year" = 1998
-), "_u_1" AS (
   SELECT
     AVG("j"."i_current_price") AS "_col_0",
-    "j"."i_category" AS "_u_2"
+    "j"."i_category" AS "_u_1"
   FROM "item" AS "j"
   GROUP BY
     "j"."i_category"
@@ -921,14 +915,19 @@ JOIN "store_sales" AS "s"
   ON "c"."c_customer_sk" = "s"."ss_customer_sk"
 JOIN "date_dim" AS "d"
   ON "d"."d_date_sk" = "s"."ss_sold_date_sk"
+  AND "d"."d_month_seq" = (
+    SELECT DISTINCT
+      "date_dim"."d_month_seq" AS "d_month_seq"
+    FROM "date_dim" AS "date_dim"
+    WHERE
+      "date_dim"."d_moy" = 7 AND "date_dim"."d_year" = 1998
+  )
 JOIN "item" AS "i"
   ON "i"."i_item_sk" = "s"."ss_item_sk"
-JOIN "_u_0" AS "_u_0"
-  ON "_u_0"."d_month_seq" = "d"."d_month_seq"
-LEFT JOIN "_u_1" AS "_u_1"
-  ON "_u_1"."_u_2" = "i"."i_category"
+LEFT JOIN "_u_0" AS "_u_0"
+  ON "_u_0"."_u_1" = "i"."i_category"
 WHERE
-  "i"."i_current_price" > 1.2 * "_u_1"."_col_0"
+  "i"."i_current_price" > 1.2 * "_u_0"."_col_0"
 GROUP BY
   "a"."ca_state"
 HAVING
@@ -2625,10 +2624,6 @@ WITH "item_2" AS (
     AND "_0"."class_id" = "item"."i_class_id"
   GROUP BY
     "item"."i_item_sk"
-), "_u_1" AS (
-  SELECT
-    "avg_sales"."average_sales" AS "average_sales"
-  FROM "avg_sales" AS "avg_sales"
 ), "y" AS (
   SELECT
     'store' AS "channel",
@@ -2644,7 +2639,6 @@ WITH "item_2" AS (
     ON "date_dim"."d_date_sk" = "store_sales"."ss_sold_date_sk"
   LEFT JOIN "_u_0" AS "_u_0"
     ON "_u_0"."ss_item_sk" = "store_sales"."ss_item_sk"
-  CROSS JOIN "_u_1" AS "_u_1"
   WHERE
     NOT "_u_0"."ss_item_sk" IS NULL
   GROUP BY
@@ -2652,7 +2646,11 @@ WITH "item_2" AS (
     "item"."i_class_id",
     "item"."i_category_id"
   HAVING
-    MAX("_u_1"."average_sales") < SUM("store_sales"."ss_quantity" * "store_sales"."ss_list_price")
+    (
+      SELECT
+        "avg_sales"."average_sales" AS "average_sales"
+      FROM "avg_sales" AS "avg_sales"
+    ) < SUM("store_sales"."ss_quantity" * "store_sales"."ss_list_price")
   UNION ALL
   SELECT
     'catalog' AS "channel",
@@ -2666,17 +2664,20 @@ WITH "item_2" AS (
     ON "catalog_sales"."cs_item_sk" = "item"."i_item_sk"
   JOIN "date_dim_3" AS "date_dim"
     ON "catalog_sales"."cs_sold_date_sk" = "date_dim"."d_date_sk"
-  LEFT JOIN "_u_0" AS "_u_2"
-    ON "_u_2"."ss_item_sk" = "catalog_sales"."cs_item_sk"
-  CROSS JOIN "_u_1" AS "_u_3"
+  LEFT JOIN "_u_0" AS "_u_1"
+    ON "_u_1"."ss_item_sk" = "catalog_sales"."cs_item_sk"
   WHERE
-    NOT "_u_2"."ss_item_sk" IS NULL
+    NOT "_u_1"."ss_item_sk" IS NULL
   GROUP BY
     "item"."i_brand_id",
     "item"."i_class_id",
     "item"."i_category_id"
   HAVING
-    MAX("_u_3"."average_sales") < SUM("catalog_sales"."cs_quantity" * "catalog_sales"."cs_list_price")
+    (
+      SELECT
+        "avg_sales"."average_sales" AS "average_sales"
+      FROM "avg_sales" AS "avg_sales"
+    ) < SUM("catalog_sales"."cs_quantity" * "catalog_sales"."cs_list_price")
   UNION ALL
   SELECT
     'web' AS "channel",
@@ -2690,17 +2691,20 @@ WITH "item_2" AS (
     ON "item"."i_item_sk" = "web_sales"."ws_item_sk"
   JOIN "date_dim_3" AS "date_dim"
     ON "date_dim"."d_date_sk" = "web_sales"."ws_sold_date_sk"
-  LEFT JOIN "_u_0" AS "_u_4"
-    ON "_u_4"."ss_item_sk" = "web_sales"."ws_item_sk"
-  CROSS JOIN "_u_1" AS "_u_5"
+  LEFT JOIN "_u_0" AS "_u_2"
+    ON "_u_2"."ss_item_sk" = "web_sales"."ws_item_sk"
   WHERE
-    NOT "_u_4"."ss_item_sk" IS NULL
+    NOT "_u_2"."ss_item_sk" IS NULL
   GROUP BY
     "item"."i_brand_id",
     "item"."i_class_id",
     "item"."i_category_id"
   HAVING
-    MAX("_u_5"."average_sales") < SUM("web_sales"."ws_quantity" * "web_sales"."ws_list_price")
+    (
+      SELECT
+        "avg_sales"."average_sales" AS "average_sales"
+      FROM "avg_sales" AS "avg_sales"
+    ) < SUM("web_sales"."ws_quantity" * "web_sales"."ws_list_price")
 )
 SELECT
   "y"."channel" AS "channel",
@@ -3413,13 +3417,16 @@ WITH "frequent_ss_items" AS (
   SELECT
     "customer"."c_customer_sk" AS "c_customer_sk"
   FROM "store_sales" AS "store_sales"
-  CROSS JOIN "max_store_sales" AS "max_store_sales"
   JOIN "customer_2" AS "customer"
     ON "customer"."c_customer_sk" = "store_sales"."ss_customer_sk"
   GROUP BY
     "customer"."c_customer_sk"
   HAVING
-    0.95 * MAX("max_store_sales"."tpcds_cmax") < SUM("store_sales"."ss_quantity" * "store_sales"."ss_sales_price")
+    0.95 * (
+      SELECT
+        "max_store_sales"."tpcds_cmax" AS "tpcds_cmax"
+      FROM "max_store_sales" AS "max_store_sales"
+    ) < SUM("store_sales"."ss_quantity" * "store_sales"."ss_sales_price")
 ), "date_dim_4" AS (
   SELECT
     "date_dim"."d_date_sk" AS "d_date_sk",
@@ -3428,13 +3435,13 @@ WITH "frequent_ss_items" AS (
   FROM "date_dim" AS "date_dim"
   WHERE
     "date_dim"."d_moy" = 6 AND "date_dim"."d_year" = 1998
-), "_u_1" AS (
+), "_u_0" AS (
   SELECT
     "frequent_ss_items"."item_sk" AS "item_sk"
   FROM "frequent_ss_items" AS "frequent_ss_items"
   GROUP BY
     "frequent_ss_items"."item_sk"
-), "_u_2" AS (
+), "_u_1" AS (
   SELECT
     "best_ss_customer"."c_customer_sk" AS "c_customer_sk"
   FROM "best_ss_customer" AS "best_ss_customer"
@@ -3446,24 +3453,24 @@ WITH "frequent_ss_items" AS (
   FROM "catalog_sales" AS "catalog_sales"
   JOIN "date_dim_4" AS "date_dim"
     ON "catalog_sales"."cs_sold_date_sk" = "date_dim"."d_date_sk"
+  LEFT JOIN "_u_0" AS "_u_0"
+    ON "_u_0"."item_sk" = "catalog_sales"."cs_item_sk"
   LEFT JOIN "_u_1" AS "_u_1"
-    ON "_u_1"."item_sk" = "catalog_sales"."cs_item_sk"
-  LEFT JOIN "_u_2" AS "_u_2"
-    ON "_u_2"."c_customer_sk" = "catalog_sales"."cs_bill_customer_sk"
+    ON "_u_1"."c_customer_sk" = "catalog_sales"."cs_bill_customer_sk"
   WHERE
-    NOT "_u_1"."item_sk" IS NULL AND NOT "_u_2"."c_customer_sk" IS NULL
+    NOT "_u_0"."item_sk" IS NULL AND NOT "_u_1"."c_customer_sk" IS NULL
   UNION ALL
   SELECT
     "web_sales"."ws_quantity" * "web_sales"."ws_list_price" AS "sales"
   FROM "web_sales" AS "web_sales"
   JOIN "date_dim_4" AS "date_dim"
     ON "date_dim"."d_date_sk" = "web_sales"."ws_sold_date_sk"
+  LEFT JOIN "_u_0" AS "_u_2"
+    ON "_u_2"."item_sk" = "web_sales"."ws_item_sk"
   LEFT JOIN "_u_1" AS "_u_3"
-    ON "_u_3"."item_sk" = "web_sales"."ws_item_sk"
-  LEFT JOIN "_u_2" AS "_u_4"
-    ON "_u_4"."c_customer_sk" = "web_sales"."ws_bill_customer_sk"
+    ON "_u_3"."c_customer_sk" = "web_sales"."ws_bill_customer_sk"
   WHERE
-    NOT "_u_3"."item_sk" IS NULL AND NOT "_u_4"."c_customer_sk" IS NULL
+    NOT "_u_2"."item_sk" IS NULL AND NOT "_u_3"."c_customer_sk" IS NULL
 )
 SELECT
   SUM("_1"."sales") AS "_col_0"
@@ -5656,48 +5663,35 @@ WHERE  asceding.rnk = descending.rnk
        AND i2.i_item_sk = descending.item_sk
 ORDER  BY asceding.rnk
 LIMIT 100;
-WITH "_u_0" AS (
-  SELECT
-    AVG("store_sales"."ss_net_profit") AS "rank_col"
-  FROM "store_sales" AS "store_sales"
-  WHERE
-    "store_sales"."ss_cdemo_sk" IS NULL AND "store_sales"."ss_store_sk" = 4
-  GROUP BY
-    "store_sales"."ss_store_sk"
-), "v1" AS (
+WITH "v1" AS (
   SELECT
     "ss1"."ss_item_sk" AS "item_sk",
     AVG("ss1"."ss_net_profit") AS "rank_col"
   FROM "store_sales" AS "ss1"
-  CROSS JOIN "_u_0" AS "_u_0"
   WHERE
     "ss1"."ss_store_sk" = 4
   GROUP BY
     "ss1"."ss_item_sk"
   HAVING
-    0.9 * MAX("_u_0"."rank_col") < AVG("ss1"."ss_net_profit")
+    0.9 * (
+      SELECT
+        AVG("store_sales"."ss_net_profit") AS "rank_col"
+      FROM "store_sales" AS "store_sales"
+      WHERE
+        "store_sales"."ss_cdemo_sk" IS NULL AND "store_sales"."ss_store_sk" = 4
+      GROUP BY
+        "store_sales"."ss_store_sk"
+    ) < AVG("ss1"."ss_net_profit")
 ), "v11" AS (
   SELECT
     "v1"."item_sk" AS "item_sk",
     RANK() OVER (ORDER BY "v1"."rank_col") AS "rnk"
   FROM "v1" AS "v1"
-), "v2" AS (
-  SELECT
-    "ss1"."ss_item_sk" AS "item_sk",
-    AVG("ss1"."ss_net_profit") AS "rank_col"
-  FROM "store_sales" AS "ss1"
-  CROSS JOIN "_u_0" AS "_u_1"
-  WHERE
-    "ss1"."ss_store_sk" = 4
-  GROUP BY
-    "ss1"."ss_item_sk"
-  HAVING
-    0.9 * MAX("_u_1"."rank_col") < AVG("ss1"."ss_net_profit")
 ), "v21" AS (
   SELECT
     "v2"."item_sk" AS "item_sk",
     RANK() OVER (ORDER BY "v2"."rank_col" DESC) AS "rnk"
-  FROM "v2" AS "v2"
+  FROM "v1" AS "v2"
 )
 SELECT
   "v11"."rnk" AS "rnk",
@@ -6952,18 +6946,6 @@ WITH "cs_or_ws_sales" AS (
     ON "cs_or_ws_sales"."item_sk" = "item"."i_item_sk"
     AND "item"."i_category" = 'Sports'
     AND "item"."i_class" = 'fitness'
-), "_u_0" AS (
-  SELECT DISTINCT
-    "date_dim"."d_month_seq" + 1 AS "_col_0"
-  FROM "date_dim" AS "date_dim"
-  WHERE
-    "date_dim"."d_moy" = 5 AND "date_dim"."d_year" = 2000
-), "_u_1" AS (
-  SELECT DISTINCT
-    "date_dim"."d_month_seq" + 3 AS "_col_0"
-  FROM "date_dim" AS "date_dim"
-  WHERE
-    "date_dim"."d_moy" = 5 AND "date_dim"."d_year" = 2000
 ), "my_revenue" AS (
   SELECT
     SUM("store_sales"."ss_ext_sales_price") AS "revenue"
@@ -6974,13 +6956,23 @@ WITH "cs_or_ws_sales" AS (
     ON "my_customers"."c_customer_sk" = "store_sales"."ss_customer_sk"
   JOIN "date_dim" AS "date_dim"
     ON "date_dim"."d_date_sk" = "store_sales"."ss_sold_date_sk"
+    AND "date_dim"."d_month_seq" <= (
+      SELECT DISTINCT
+        "date_dim"."d_month_seq" + 3 AS "_col_0"
+      FROM "date_dim" AS "date_dim"
+      WHERE
+        "date_dim"."d_moy" = 5 AND "date_dim"."d_year" = 2000
+    )
+    AND "date_dim"."d_month_seq" >= (
+      SELECT DISTINCT
+        "date_dim"."d_month_seq" + 1 AS "_col_0"
+      FROM "date_dim" AS "date_dim"
+      WHERE
+        "date_dim"."d_moy" = 5 AND "date_dim"."d_year" = 2000
+    )
   JOIN "store" AS "store"
     ON "customer_address"."ca_county" = "store"."s_county"
     AND "customer_address"."ca_state" = "store"."s_state"
-  JOIN "_u_0" AS "_u_0"
-    ON "_u_0"."_col_0" <= "date_dim"."d_month_seq"
-  JOIN "_u_1" AS "_u_1"
-    ON "_u_1"."_col_0" >= "date_dim"."d_month_seq"
   GROUP BY
     "my_customers"."c_customer_sk"
 )
@@ -7446,16 +7438,16 @@ WITH "item_2" AS (
   FROM "date_dim" AS "date_dim"
 ), "_u_0" AS (
   SELECT
-    "date_dim"."d_week_seq" AS "d_week_seq"
-  FROM "date_dim" AS "date_dim"
-  WHERE
-    "date_dim"."d_date" = '2002-02-25'
-), "_u_1" AS (
-  SELECT
     "date_dim"."d_date" AS "d_date"
   FROM "date_dim" AS "date_dim"
-  JOIN "_u_0" AS "_u_0"
-    ON "_u_0"."d_week_seq" = "date_dim"."d_week_seq"
+  WHERE
+    "date_dim"."d_week_seq" = (
+      SELECT
+        "date_dim"."d_week_seq" AS "d_week_seq"
+      FROM "date_dim" AS "date_dim"
+      WHERE
+        "date_dim"."d_date" = '2002-02-25'
+    )
   GROUP BY
     "date_dim"."d_date"
 ), "ss_items" AS (
@@ -7467,20 +7459,12 @@ WITH "item_2" AS (
     ON "item"."i_item_sk" = "store_sales"."ss_item_sk"
   JOIN "date_dim_2" AS "date_dim"
     ON "date_dim"."d_date_sk" = "store_sales"."ss_sold_date_sk"
-  LEFT JOIN "_u_1" AS "_u_1"
-    ON "_u_1"."d_date" = "date_dim"."d_date"
+  LEFT JOIN "_u_0" AS "_u_0"
+    ON "_u_0"."d_date" = "date_dim"."d_date"
   WHERE
-    NOT "_u_1"."d_date" IS NULL
+    NOT "_u_0"."d_date" IS NULL
   GROUP BY
     "item"."i_item_id"
-), "_u_3" AS (
-  SELECT
-    "date_dim"."d_date" AS "d_date"
-  FROM "date_dim" AS "date_dim"
-  JOIN "_u_0" AS "_u_2"
-    ON "_u_2"."d_week_seq" = "date_dim"."d_week_seq"
-  GROUP BY
-    "date_dim"."d_date"
 ), "cs_items" AS (
   SELECT
     "item"."i_item_id" AS "item_id",
@@ -7490,20 +7474,12 @@ WITH "item_2" AS (
     ON "catalog_sales"."cs_item_sk" = "item"."i_item_sk"
   JOIN "date_dim_2" AS "date_dim"
     ON "catalog_sales"."cs_sold_date_sk" = "date_dim"."d_date_sk"
-  LEFT JOIN "_u_3" AS "_u_3"
-    ON "_u_3"."d_date" = "date_dim"."d_date"
+  LEFT JOIN "_u_0" AS "_u_1"
+    ON "_u_1"."d_date" = "date_dim"."d_date"
   WHERE
-    NOT "_u_3"."d_date" IS NULL
+    NOT "_u_1"."d_date" IS NULL
   GROUP BY
     "item"."i_item_id"
-), "_u_5" AS (
-  SELECT
-    "date_dim"."d_date" AS "d_date"
-  FROM "date_dim" AS "date_dim"
-  JOIN "_u_0" AS "_u_4"
-    ON "_u_4"."d_week_seq" = "date_dim"."d_week_seq"
-  GROUP BY
-    "date_dim"."d_date"
 ), "ws_items" AS (
   SELECT
     "item"."i_item_id" AS "item_id",
@@ -7513,10 +7489,10 @@ WITH "item_2" AS (
     ON "item"."i_item_sk" = "web_sales"."ws_item_sk"
   JOIN "date_dim_2" AS "date_dim"
     ON "date_dim"."d_date_sk" = "web_sales"."ws_sold_date_sk"
-  LEFT JOIN "_u_5" AS "_u_5"
-    ON "_u_5"."d_date" = "date_dim"."d_date"
+  LEFT JOIN "_u_0" AS "_u_2"
+    ON "_u_2"."d_date" = "date_dim"."d_date"
   WHERE
-    NOT "_u_5"."d_date" IS NULL
+    NOT "_u_2"."d_date" IS NULL
   GROUP BY
     "item"."i_item_id"
 )
