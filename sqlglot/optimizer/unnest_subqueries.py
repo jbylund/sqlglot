@@ -165,7 +165,9 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         return
 
     if isinstance(parent_predicate, exp.Exists) and not select.args.get("group"):
-        if select.args.get("having"):
+        # A HAVING or a QUALIFY can filter out the single aggregate row, so the subquery is
+        # no longer unconditionally non-empty
+        if select.args.get("having") or select.args.get("qualify"):
             return
 
         if _has_aggregate_projection(select):
