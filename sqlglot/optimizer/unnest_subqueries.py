@@ -153,6 +153,11 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
 
     parent_predicate = select.find_ancestor(exp.Predicate)
 
+    # find_ancestor crosses query boundaries, so the predicate can live in a query that this
+    # subquery cannot be joined into. Rewriting it would emit a dangling alias reference.
+    if parent_predicate is not None and parent_predicate.parent_select is not parent_select:
+        return
+
     if isinstance(parent_predicate, exp.Exists) and not select.args.get("group"):
         if select.args.get("having"):
             return
