@@ -148,7 +148,13 @@ def unnest(select, parent_select, next_alias_name):
 def decorrelate(select, parent_select, external_columns, next_alias_name):
     where = select.args.get("where")
 
-    if not where or where.find(exp.Or) or select.find(exp.Limit, exp.Offset):
+    if (
+        not where
+        or where.find(exp.Or)
+        or select.find(exp.Limit, exp.Offset)
+        # A branch of a set operation can't be hoisted out of it on its own
+        or isinstance(select.parent, exp.SetOperation)
+    ):
         return
 
     parent_predicate = select.find_ancestor(exp.Predicate)
