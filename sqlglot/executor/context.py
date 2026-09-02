@@ -43,10 +43,10 @@ class Context:
         self.env = {**ENV, **(env or {}), "scope": self.row_readers}
 
     def eval(self, code):
-        return eval(code, self.env)
+        return code(self.env["scope"])
 
     def eval_tuple(self, codes):
-        return tuple(self.eval(code) for code in codes)
+        return codes(self.env["scope"])
 
     @property
     def table(self) -> Table:
@@ -71,9 +71,10 @@ class Context:
 
     def __iter__(self):
         self.env["scope"] = self.row_readers
+        readers = [(table, table.reader) for table in self.tables.values()]
         for i in range(len(self.table.rows)):
-            for table in self.tables.values():
-                reader = table[i]
+            for table, reader in readers:
+                reader.row = table.rows[i]
             yield reader, self
 
     def table_iter(self, table: str) -> TableIter:
