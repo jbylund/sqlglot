@@ -1,5 +1,4 @@
 import collections
-import itertools
 import math
 
 from sqlglot import exp, planner, tokens
@@ -86,13 +85,13 @@ class PythonExecutor:
         return contexts[root].tables[root.name]
 
     def generate(self, expression):
-        """Convert a SQL expression into literal Python code and compile it into bytecode."""
+        """Convert a SQL expression into a callable taking the scope to evaluate against."""
         if not expression:
             return None
 
         expression = self._replace_subqueries(expression)
         sql = self.generator.generate(expression)
-        return compile(sql, sql, "eval", optimize=2)
+        return eval(compile(f"lambda scope: ({sql})", sql, "eval", optimize=2), self.env)
 
     def _replace_subqueries(self, expression):
         if not expression.find(*SUBQUERY_NODES):
@@ -214,10 +213,13 @@ class PythonExecutor:
         return None if saw_null else not is_any
 
     def generate_tuple(self, expressions):
-        """Convert an array of SQL expressions into tuple of Python byte code."""
-        if not expressions:
-            return tuple()
-        return tuple(self.generate(expression) for expression in expressions)
+        """Convert an array of SQL expressions into a single tuple-valued callable."""
+        sqls = [
+            self.generator.generate(self._replace_subqueries(expression))
+            for expression in expressions
+        ]
+        sql = "(" + ",".join(f"({s})" for s in sqls) + ",)" if sqls else "()"
+        return eval(compile(f"lambda scope: {sql}", sql, "eval", optimize=2), self.env)
 
     def context(self, tables):
         return Context(tables, env=self.env, outer=self._outer_scope)
@@ -249,18 +251,29 @@ class PythonExecutor:
         sink = self.table(step.projections if step.projections else context.columns)
         condition = self.generate(step.condition)
         projections = self.generate_tuple(step.projections)
+        has_projections = bool(step.projections)
+        limit = step.offset + step.limit
+        count = 0
+        scope = context.row_readers
+        rows = sink.rows
+        width = len(sink.columns)
+        _len = len
+
+        if count >= limit:
+            return sink
 
         for reader in table_iter:
-            if len(sink) >= step.offset + step.limit:
-                break
-
-            if condition and not context.eval(condition):
+            if condition and not condition(scope):
                 continue
 
-            if projections:
-                sink.append(context.eval_tuple(projections))
-            else:
-                sink.append(reader.row)
+            row = projections(scope) if has_projections else reader.row
+            assert _len(row) == width
+            rows.append(row)
+
+            count += 1
+
+            if count >= limit:
+                break
 
         return sink
 
@@ -365,30 +378,34 @@ class PythonExecutor:
     def hash_join(self, join, source_context, join_context, condition, condition_context):
         source_key = self.generate_tuple(join["source_key"])
         join_key = self.generate_tuple(join["join_key"])
-        results = collections.defaultdict(lambda: ([], []))
+        source_groups = collections.defaultdict(list)
+        join_groups = collections.defaultdict(list)
 
         for index, (reader, ctx) in enumerate(source_context):
             key = ctx.eval_tuple(source_key)
-            if all(value is not None for value in key):
-                results[key][0].append((index, reader.row))
+            if None not in key:
+                source_groups[key].append((index, reader.row))
         for index, (reader, ctx) in enumerate(join_context):
             key = ctx.eval_tuple(join_key)
-            if all(value is not None for value in key):
-                results[key][1].append((index, reader.row))
+            if None not in key:
+                join_groups[key].append((index, reader.row))
 
         table = Table(source_context.columns + join_context.columns)
         matched_source = set()
         matched_join = set()
 
-        for source_group, join_group in results.values():
-            for (source_index, source_row), (join_index, join_row) in itertools.product(
-                source_group, join_group
-            ):
-                row = source_row + join_row
-                if self._join_matches(row, condition, condition_context):
-                    table.append(row)
-                    matched_source.add(source_index)
-                    matched_join.add(join_index)
+        for key, source_group in source_groups.items():
+            join_group = join_groups.get(key)
+            if not join_group:
+                continue
+
+            for source_index, source_row in source_group:
+                for join_index, join_row in join_group:
+                    row = source_row + join_row
+                    if self._join_matches(row, condition, condition_context):
+                        table.append(row)
+                        matched_source.add(source_index)
+                        matched_join.add(join_index)
 
         self._append_unmatched_join_rows(
             table,
@@ -424,7 +441,7 @@ class PythonExecutor:
         aggregations = self.generate_tuple(step.aggregations)
         operands = self.generate_tuple(step.operands)
 
-        if operands:
+        if step.operands:
             operand_table = Table(self.table(step.operands).columns)
 
             for reader, ctx in context:
@@ -476,7 +493,7 @@ class PythonExecutor:
                 if i == length - 1:
                     context.set_range(start, end - 1)
                     add_row()
-        elif step.limit > 0 and not group_by:
+        elif step.limit > 0 and not step.group:
             context.set_range(0, 0)
             table.append(context.eval_tuple(aggregations))
 
