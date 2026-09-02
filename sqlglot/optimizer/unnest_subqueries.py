@@ -359,9 +359,24 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
     return expression.replace(exp.condition(condition))
 
 
+def _is_windowed(agg: exp.Expr) -> bool:
+    node = agg
+    parent = node.parent
+
+    while parent is not None and not isinstance(parent, exp.Select):
+        # An aggregate in a window spec (PARTITION BY / ORDER BY) still groups the query, only
+        # the function a window is applied to is windowed
+        if isinstance(parent, exp.Window):
+            return node.arg_key == "this"
+
+        node, parent = parent, parent.parent
+
+    return False
+
+
 def _has_aggregate_projection(select: exp.Select) -> bool:
     return any(
-        not isinstance(agg.find_ancestor(exp.Window, exp.Select), exp.Window)
+        not _is_windowed(agg)
         for projection in select.selects
         for agg in find_all_in_scope(projection, exp.AggFunc)
     )
