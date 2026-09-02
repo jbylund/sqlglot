@@ -71,6 +71,14 @@ SELECT * FROM x WHERE EXISTS(SELECT y.a AS a FROM y WHERE y.a = x.a INTERSECT SE
 SELECT * FROM x WHERE EXISTS (SELECT COUNT(*) FROM y WHERE y.a = x.a QUALIFY ROW_NUMBER() OVER () = 2);
 SELECT * FROM x WHERE EXISTS(SELECT COUNT(*) FROM y WHERE y.a = x.a QUALIFY ROW_NUMBER() OVER () = 2);
 
+# title: an aggregate in a window spec still groups the subquery into a single row
+SELECT * FROM x WHERE EXISTS (SELECT RANK() OVER (ORDER BY SUM(y.b)) FROM y WHERE y.a = x.a);
+SELECT * FROM x WHERE TRUE;
+
+# title: EXISTS over a scalar aggregate is folded inside an outer window function
+SELECT COUNT(CASE WHEN EXISTS(SELECT COUNT(*) FROM y WHERE y.a = x.a) THEN 1 END) OVER () FROM x;
+SELECT COUNT(CASE WHEN TRUE THEN 1 END) OVER () FROM x;
+
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y LIMIT 10);
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y LIMIT 10);
 

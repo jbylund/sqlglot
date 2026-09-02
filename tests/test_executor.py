@@ -890,6 +890,11 @@ class TestExecutor(unittest.TestCase):
             ("SELECT a FROM x WHERE EXISTS (SELECT 1, 2 FROM y WHERE b = x.a)", [2]),
             ("SELECT a FROM x WHERE NOT EXISTS (SELECT 1, 2 FROM y WHERE b = x.a)", [1, None]),
             ("SELECT a FROM x WHERE EXISTS (SELECT COUNT(*) OVER () FROM y WHERE b = x.a)", [2]),
+            (
+                "SELECT a FROM x WHERE EXISTS "
+                "(SELECT RANK() OVER (ORDER BY SUM(b)) FROM y WHERE b = x.a)",
+                [1, 2, None],
+            ),
             ("SELECT a FROM x WHERE EXISTS (SELECT COUNT(*) FROM y WHERE b = x.a GROUP BY b)", [2]),
             # a HAVING is declined, so the executor evaluates the subquery per outer row
             (
