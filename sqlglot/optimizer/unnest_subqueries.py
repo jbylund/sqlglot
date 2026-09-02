@@ -361,7 +361,7 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
 
 def _has_aggregate_projection(select: exp.Select) -> bool:
     return any(
-        agg.find_ancestor(exp.Window) is None
+        not isinstance(agg.find_ancestor(exp.Window, exp.Select), exp.Window)
         for projection in select.selects
         for agg in find_all_in_scope(projection, exp.AggFunc)
     )
