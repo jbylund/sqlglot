@@ -359,8 +359,6 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
 def _is_windowed(agg: exp.Expr) -> bool:
     node = agg
 
-    # only the function a window is applied to is windowed, and FILTER / IGNORE NULLS /
-    # WITHIN GROUP / parens don't change which function that is
     while (
         node.arg_key == "this"
         and node.parent is not None
