@@ -163,7 +163,6 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         return
 
     if isinstance(parent_predicate, exp.Exists) and not select.args.get("group"):
-        # a HAVING or QUALIFY can filter out the single aggregate row
         if select.args.get("having") or select.args.get("qualify"):
             return
 
