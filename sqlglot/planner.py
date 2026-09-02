@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import math
 import typing as t
+from collections.abc import Iterable, Iterator, Sequence
 
 from sqlglot import alias, exp
 from sqlglot.helper import name_sequence
-from sqlglot.optimizer.eliminate_joins import join_condition
+from sqlglot.optimizer.eliminate_joins import join_condition, unnest_operand
 from sqlglot.optimizer.scope import find_all_in_scope, find_in_scope
-from collections.abc import Iterator, Sequence, Iterable
 
 
 class Plan:
@@ -41,7 +41,7 @@ class Plan:
         return (node for node, deps in self.dag.items() if not deps)
 
     def __repr__(self) -> str:
-        return f"Plan\n----\n{repr(self.root)}"
+        return f"Plan\n----\n{self.root!r}"
 
 
 class Step:
@@ -136,7 +136,7 @@ class Step:
                 aggregations[expression] = None
 
             for agg in agg_funcs:
-                for operand in agg.unnest_operands():
+                for operand in (unnest_operand(arg) for arg in agg.iter_expressions()):
                     if isinstance(operand, exp.Column):
                         continue
                     if operand not in operands:
