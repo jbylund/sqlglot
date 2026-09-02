@@ -924,8 +924,7 @@ class TestExecutor(unittest.TestCase):
                 )
 
     def test_correlated_exists_over_a_nested_scalar_aggregate(self):
-        # the aggregate belongs to a query nested inside the EXISTS, so the EXISTS itself is
-        # still conditional and can't be folded
+        # the aggregate belongs to a nested query, so the EXISTS is still conditional
         tables = {
             "x": [{"a": 1}, {"a": 2}, {"a": None}],
             "y": [{"a": 2, "b": 20}, {"a": 3, "b": 30}],

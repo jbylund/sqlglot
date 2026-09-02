@@ -152,21 +152,18 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
         not where
         or where.find(exp.Or)
         or select.find(exp.Limit, exp.Offset)
-        # A branch of a set operation can't be hoisted out of it on its own
         or isinstance(select.parent, exp.SetOperation)
     ):
         return
 
     parent_predicate = select.find_ancestor(exp.Predicate)
 
-    # find_ancestor crosses query boundaries, so the predicate can live in a query that this
-    # subquery cannot be joined into. Rewriting it would emit a dangling alias reference.
+    # find_ancestor crosses query boundaries, so the predicate can belong to another query
     if parent_predicate is not None and parent_predicate.parent_select is not parent_select:
         return
 
     if isinstance(parent_predicate, exp.Exists) and not select.args.get("group"):
-        # A HAVING or a QUALIFY can filter out the single aggregate row, so the subquery is
-        # no longer unconditionally non-empty
+        # a HAVING or QUALIFY can filter out the single aggregate row
         if select.args.get("having") or select.args.get("qualify"):
             return
 
@@ -362,8 +359,8 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
 def _is_windowed(agg: exp.Expr) -> bool:
     node = agg
 
-    # FILTER, IGNORE NULLS, WITHIN GROUP and parens sit between a window and the function it is
-    # applied to without changing which function that is
+    # only the function a window is applied to is windowed, and FILTER / IGNORE NULLS /
+    # WITHIN GROUP / parens don't change which function that is
     while (
         node.arg_key == "this"
         and node.parent is not None
@@ -371,8 +368,6 @@ def _is_windowed(agg: exp.Expr) -> bool:
     ):
         node = node.parent
 
-    # Only the function a window is applied to is windowed. An aggregate in the window spec
-    # (PARTITION BY / ORDER BY) or in the arguments of that function still groups the query.
     return isinstance(node.parent, exp.Window) and node.arg_key == "this"
 
 
