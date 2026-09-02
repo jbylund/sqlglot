@@ -911,6 +911,46 @@ class TestExecutor(unittest.TestCase):
                     sorted(expected, key=str),
                 )
 
+    def test_correlated_exists_over_a_nested_scalar_aggregate(self):
+        # the aggregate belongs to a query nested inside the EXISTS, so the EXISTS itself is
+        # still conditional and can't be folded
+        tables = {
+            "x": [{"a": 1}, {"a": 2}, {"a": None}],
+            "y": [{"a": 2, "b": 20}, {"a": 3, "b": 30}],
+            "z": [{"a": 1}],
+        }
+        schema = {"x": {"a": "int"}, "y": {"a": "int", "b": "int"}, "z": {"a": "int"}}
+
+        for sql, expected in (
+            (
+                "SELECT a FROM x WHERE EXISTS "
+                "(SELECT * FROM (SELECT COUNT(*) AS c FROM y WHERE y.a = x.a) AS t WHERE t.c > 5)",
+                [],
+            ),
+            (
+                "SELECT a FROM x WHERE EXISTS (WITH t AS (SELECT COUNT(*) AS c FROM y "
+                "WHERE y.a = x.a) SELECT t.c AS c FROM t WHERE t.c > 5)",
+                [],
+            ),
+            (
+                "SELECT a FROM x WHERE EXISTS "
+                "(SELECT COUNT(*) AS c FROM y WHERE y.a = x.a INTERSECT SELECT z.a AS a FROM z)",
+                [2],
+            ),
+            (
+                "SELECT a FROM x WHERE EXISTS "
+                "(SELECT y.a AS a FROM y WHERE y.a = x.a INTERSECT SELECT z.a AS a FROM z)",
+                [],
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(
+                    sorted(
+                        (row[0] for row in execute(sql, tables=tables, schema=schema).rows), key=str
+                    ),
+                    sorted(expected, key=str),
+                )
+
     def test_table_depth_mismatch(self):
         tables = {"table": []}
         schema = {"db": {"table": {"col": "VARCHAR"}}}

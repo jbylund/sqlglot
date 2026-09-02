@@ -51,6 +51,26 @@ SELECT * FROM x WHERE EXISTS(SELECT COUNT(*) FROM y WHERE y.a = x.a HAVING COUNT
 SELECT * FROM x WHERE EXISTS (SELECT COUNT(*) OVER () FROM y WHERE y.a = x.a);
 SELECT * FROM x LEFT JOIN (SELECT y.a AS _u_1 FROM y WHERE TRUE GROUP BY y.a) AS _u_0 ON _u_0._u_1 = x.a WHERE NOT _u_0._u_1 IS NULL;
 
+# title: EXISTS is not folded when the aggregate belongs to a derived table inside it
+SELECT * FROM x WHERE EXISTS (SELECT * FROM (SELECT COUNT(*) AS c FROM y WHERE y.a = x.a) AS t WHERE t.c > 5);
+SELECT * FROM x WHERE EXISTS(SELECT * FROM (SELECT COUNT(*) AS c FROM y WHERE y.a = x.a) AS t WHERE t.c > 5);
+
+# title: EXISTS is not folded when the aggregate belongs to a CTE inside it
+SELECT * FROM x WHERE EXISTS (WITH t AS (SELECT COUNT(*) AS c FROM y WHERE y.a = x.a) SELECT t.c AS c FROM t WHERE t.c > 5);
+SELECT * FROM x WHERE EXISTS(WITH t AS (SELECT COUNT(*) AS c FROM y WHERE y.a = x.a) SELECT t.c AS c FROM t WHERE t.c > 5);
+
+# title: EXISTS is not folded when the aggregate is only one branch of a set operation
+SELECT * FROM x WHERE EXISTS (SELECT COUNT(*) AS c FROM y WHERE y.a = x.a INTERSECT SELECT z.a AS a FROM z);
+SELECT * FROM x WHERE EXISTS(SELECT COUNT(*) AS c FROM y WHERE y.a = x.a INTERSECT SELECT z.a AS a FROM z);
+
+# title: a correlated branch of a set operation is not decorrelated, it can't be hoisted out
+SELECT * FROM x WHERE EXISTS (SELECT y.a AS a FROM y WHERE y.a = x.a INTERSECT SELECT z.a AS a FROM z);
+SELECT * FROM x WHERE EXISTS(SELECT y.a AS a FROM y WHERE y.a = x.a INTERSECT SELECT z.a AS a FROM z);
+
+# title: EXISTS over a scalar aggregate with a QUALIFY is not rewritten
+SELECT * FROM x WHERE EXISTS (SELECT COUNT(*) FROM y WHERE y.a = x.a QUALIFY ROW_NUMBER() OVER () = 2);
+SELECT * FROM x WHERE EXISTS(SELECT COUNT(*) FROM y WHERE y.a = x.a QUALIFY ROW_NUMBER() OVER () = 2);
+
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y LIMIT 10);
 SELECT * FROM x WHERE x.a IN (SELECT y.a AS a FROM y LIMIT 10);
 
