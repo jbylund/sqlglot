@@ -361,17 +361,19 @@ def _replace(expression: exp.Expr, condition: exp.ExpOrStr) -> exp.Expr:
 
 def _is_windowed(agg: exp.Expr) -> bool:
     node = agg
-    parent = node.parent
 
-    while parent is not None and not isinstance(parent, exp.Select):
-        # An aggregate in a window spec (PARTITION BY / ORDER BY) still groups the query, only
-        # the function a window is applied to is windowed
-        if isinstance(parent, exp.Window):
-            return node.arg_key == "this"
+    # FILTER, IGNORE NULLS, WITHIN GROUP and parens sit between a window and the function it is
+    # applied to without changing which function that is
+    while (
+        node.arg_key == "this"
+        and node.parent is not None
+        and not isinstance(node.parent, (exp.Window, exp.Func))
+    ):
+        node = node.parent
 
-        node, parent = parent, parent.parent
-
-    return False
+    # Only the function a window is applied to is windowed. An aggregate in the window spec
+    # (PARTITION BY / ORDER BY) or in the arguments of that function still groups the query.
+    return isinstance(node.parent, exp.Window) and node.arg_key == "this"
 
 
 def _has_aggregate_projection(select: exp.Select) -> bool:
