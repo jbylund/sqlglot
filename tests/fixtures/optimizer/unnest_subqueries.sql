@@ -75,6 +75,18 @@ SELECT * FROM x WHERE EXISTS(SELECT COUNT(*) FROM y WHERE y.a = x.a QUALIFY ROW_
 SELECT * FROM x WHERE EXISTS (SELECT RANK() OVER (ORDER BY SUM(y.b)) FROM y WHERE y.a = x.a);
 SELECT * FROM x WHERE TRUE;
 
+# title: a parenthesized aggregate in a window spec still groups the subquery
+SELECT * FROM x WHERE EXISTS (SELECT RANK() OVER (ORDER BY (SUM(y.b))) FROM y WHERE y.a = x.a);
+SELECT * FROM x WHERE TRUE;
+
+# title: an aggregate in the arguments of a windowed function still groups the subquery
+SELECT * FROM x WHERE EXISTS (SELECT LAG(SUM(y.b)) OVER (ORDER BY 1) FROM y WHERE y.a = x.a);
+SELECT * FROM x WHERE TRUE;
+
+# title: a FILTER between the window and the aggregate leaves it windowed
+SELECT * FROM x WHERE EXISTS (SELECT SUM(y.b) FILTER(WHERE y.b > 1) OVER () FROM y WHERE y.a = x.a);
+SELECT * FROM x LEFT JOIN (SELECT y.a AS _u_1 FROM y WHERE TRUE GROUP BY y.a) AS _u_0 ON _u_0._u_1 = x.a WHERE NOT _u_0._u_1 IS NULL;
+
 # title: EXISTS over a scalar aggregate is folded inside an outer window function
 SELECT COUNT(CASE WHEN EXISTS(SELECT COUNT(*) FROM y WHERE y.a = x.a) THEN 1 END) OVER () FROM x;
 SELECT COUNT(CASE WHEN TRUE THEN 1 END) OVER () FROM x;
