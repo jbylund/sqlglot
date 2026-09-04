@@ -207,10 +207,22 @@ class Step:
         else:
             aggregate = None
 
+        # Plan DISTINCT before ORDER BY, since Aggregate sorts by its own group key
+        if isinstance(expression, exp.Select) and expression.args.get("distinct"):
+            distinct = Aggregate()
+            distinct.source = step.name
+            distinct.name = step.name
+            distinct.group = {
+                e.alias_or_name: e.unalias() for e in projections or expression.expressions
+            }
+            projections = [exp.column(name, step.name, quoted=True) for name in distinct.group]
+            distinct.add_dependency(step)
+            step = distinct
+
         order: exp.Order | None = expression.args.get("order")
 
         if order is not None:
-            if aggregate is not None and isinstance(step, Aggregate):
+            if aggregate is not None and step is aggregate:
                 for i, ordered in enumerate(order.expressions):
                     if extract_agg_operands(exp.alias_(ordered.this, f"_o_{i}", quoted=True)):
                         ordered.this.replace(exp.column(f"_o_{i}", step.name, quoted=True))
@@ -224,17 +236,6 @@ class Step:
             step = sort
 
         step.projections = projections
-
-        if isinstance(expression, exp.Select) and expression.args.get("distinct"):
-            distinct = Aggregate()
-            distinct.source = step.name
-            distinct.name = step.name
-            distinct.group = {
-                e.alias_or_name: exp.column(col=e.alias_or_name, table=step.name)
-                for e in projections or expression.expressions
-            }
-            distinct.add_dependency(step)
-            step = distinct
 
         limit: exp.Limit | None = expression.args.get("limit")
 
