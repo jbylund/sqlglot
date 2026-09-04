@@ -32,7 +32,7 @@ def unnest_subqueries(expression: E) -> E:
             continue
         if scope.external_columns:
             # a correlated set operation branch can't be hoisted out on its own
-            if scope.scope_type != ScopeType.UNION:
+            if scope.scope_type != ScopeType.SET_OPERATION:
                 decorrelate(select, parent, scope.external_columns, next_alias_name)
         elif scope.scope_type == ScopeType.SUBQUERY:
             unnest(select, parent, next_alias_name)
