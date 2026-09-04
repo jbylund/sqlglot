@@ -207,9 +207,7 @@ class Step:
         else:
             aggregate = None
 
-        # DISTINCT has to be planned before ORDER BY, so that the Sort ends up on top of the
-        # dedup and its key is what orders the final rows. Aggregate sorts by its group in
-        # order to walk runs of equal keys, so a Sort underneath it would be undone.
+        # Plan DISTINCT before ORDER BY, since Aggregate sorts by its own group key
         if isinstance(expression, exp.Select) and expression.args.get("distinct"):
             distinct = Aggregate()
             distinct.source = step.name
