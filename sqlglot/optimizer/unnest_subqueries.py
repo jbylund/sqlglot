@@ -151,7 +151,7 @@ def decorrelate(select, parent_select, external_columns, next_alias_name):
     if (
         not where
         or where.find(exp.Or)
-        or select.find(exp.Limit, exp.Offset)
+        or select.find(exp.Limit, exp.Offset, exp.Fetch)
         or isinstance(select.parent, exp.SetOperation)
     ):
         return
