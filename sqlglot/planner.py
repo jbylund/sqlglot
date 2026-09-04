@@ -207,10 +207,27 @@ class Step:
         else:
             aggregate = None
 
+        # DISTINCT has to be planned before ORDER BY, so that the Sort ends up on top of the
+        # dedup and its key is what orders the final rows. Aggregate sorts by its group in
+        # order to walk runs of equal keys, so a Sort underneath it would be undone.
+        if isinstance(expression, exp.Select) and expression.args.get("distinct"):
+            distinct = Aggregate()
+            distinct.source = step.name
+            distinct.name = step.name
+            distinct.group = {
+                f"_d{i}": e.unalias() for i, e in enumerate(projections or expression.expressions)
+            }
+            projections = [
+                alias(exp.column(name, step.name, quoted=True), e.alias_or_name, quoted=True)
+                for name, e in zip(distinct.group, projections or expression.expressions)
+            ]
+            distinct.add_dependency(step)
+            step = distinct
+
         order: exp.Order | None = expression.args.get("order")
 
         if order is not None:
-            if aggregate is not None and isinstance(step, Aggregate):
+            if aggregate is not None and step is aggregate:
                 for i, ordered in enumerate(order.expressions):
                     if extract_agg_operands(exp.alias_(ordered.this, f"_o_{i}", quoted=True)):
                         ordered.this.replace(exp.column(f"_o_{i}", step.name, quoted=True))
@@ -224,17 +241,6 @@ class Step:
             step = sort
 
         step.projections = projections
-
-        if isinstance(expression, exp.Select) and expression.args.get("distinct"):
-            distinct = Aggregate()
-            distinct.source = step.name
-            distinct.name = step.name
-            distinct.group = {
-                e.alias_or_name: exp.column(col=e.alias_or_name, table=step.name)
-                for e in projections or expression.expressions
-            }
-            distinct.add_dependency(step)
-            step = distinct
 
         limit: exp.Limit | None = expression.args.get("limit")
 
