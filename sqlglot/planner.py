@@ -213,12 +213,9 @@ class Step:
             distinct.source = step.name
             distinct.name = step.name
             distinct.group = {
-                f"_d{i}": e.unalias() for i, e in enumerate(projections or expression.expressions)
+                e.alias_or_name: e.unalias() for e in projections or expression.expressions
             }
-            projections = [
-                alias(exp.column(name, step.name, quoted=True), e.alias_or_name, quoted=True)
-                for name, e in zip(distinct.group, projections or expression.expressions)
-            ]
+            projections = [exp.column(name, step.name, quoted=True) for name in distinct.group]
             distinct.add_dependency(step)
             step = distinct
 
