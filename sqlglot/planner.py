@@ -265,14 +265,17 @@ class Step:
 
                     this = ordered.this.copy()
 
-                    # requalify a bare reference to an output name (eg "a" in "a + 1")
-                    for node in this.walk():
-                        if (
-                            isinstance(node, exp.Column)
-                            and not node.table
-                            and node.name in distinct.group
-                        ):
-                            node.replace(distinct.group[node.name].copy())
+                    # requalify a bare reference to an output name (eg "a" in "a + 1");
+                    # collect matches before replacing so we don't mutate mid-walk
+                    to_requalify = [
+                        node
+                        for node in this.walk()
+                        if isinstance(node, exp.Column)
+                        and not node.table
+                        and node.name in distinct.group
+                    ]
+                    for node in to_requalify:
+                        node.replace(distinct.group[node.name].copy())
 
                     name = next_distinct_order_name()
                     extract_distinct_operands(exp.alias_(exp.First(this=this), name, quoted=True))
