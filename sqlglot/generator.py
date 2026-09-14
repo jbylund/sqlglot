@@ -3526,9 +3526,18 @@ class Generator:
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS:
+            # the rewrite reparents the subquery under the derived table it builds
+            parent = expression.parent
             wrapped = self._wrapped_query_modifiers_sql(expression)
             if wrapped is not None:
-                return wrapped
+                # the rewrite yields a query, not a parenthesized one, so it still needs the
+                # parens this node would have emitted unless it stands where a query is legal
+                if parent is None or isinstance(
+                    parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
+                ):
+                    return wrapped
+
+                return self.wrap(wrapped)
 
         alias = self.sql(expression, "alias")
         alias = f"{sep}{alias}" if alias else ""
