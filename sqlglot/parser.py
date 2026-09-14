@@ -4357,8 +4357,6 @@ class Parser:
 
         target: exp.Expr = this
         while isinstance(target, exp.Subquery):
-            # anything else on the wrapper makes it a derived table, not mere grouping. Not
-            # `is_wrapper`: it tests for None, and some dialects set falsy args like `join_mark`
             if any(v for k, v in target.args.items() if k != "this"):
                 return None
 
@@ -4379,7 +4377,6 @@ class Parser:
             for lateral in iter(self._parse_lateral, None):
                 this.append("laterals", lateral)
 
-            # after the loops above, so that a join or lateral cancels the merge
             merge_target = self._wrapped_query_merge_target(this)
             merged = False
 

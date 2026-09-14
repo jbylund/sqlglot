@@ -3494,9 +3494,6 @@ class Generator:
         if not any(expression.args.get(key) for key in exp.TRAILING_QUERY_MODIFIERS):
             return None
 
-        parent = expression.parent
-
-        # pivots and sample decorate the derived table itself, so they stay put
         modifiers = {}
         for key in (*exp.QUERY_MODIFIERS, "with_"):
             if key in ("pivots", "sample"):
@@ -3513,14 +3510,7 @@ class Generator:
         for key, value in modifiers.items():
             select.set(key, value)
 
-        select = self._move_ctes_to_top_level(select)
-
-        # the parentheses this Subquery supplied are still needed, unless the parent brings its own
-        return (
-            self.sql(select)
-            if parent is None or isinstance(parent, exp.Subquery)
-            else self.wrap(select)
-        )
+        return self.sql(self._move_ctes_to_top_level(select))
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and not expression.args.get("alias"):

@@ -5150,6 +5150,36 @@ FROM subquery2""",
             "SELECT * FROM (SELECT a FROM x UNION ALL SELECT b FROM y) AS _t0 LIMIT 2",
         )
 
+    def test_wrapped_query_modifiers_positions(self):
+        for sql, expected in (
+            (
+                "(SELECT a FROM x) TABLESAMPLE (10 PERCENT) LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t0 TABLESAMPLE (10) LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t0 JOIN y ON TRUE LIMIT 1",
+            ),
+            (
+                "WITH c AS ((SELECT a FROM x) LIMIT 1) SELECT * FROM c",
+                "WITH c AS (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1) SELECT * FROM c",
+            ),
+            (
+                "INSERT INTO t (SELECT a FROM x) LIMIT 1",
+                "INSERT INTO t SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1",
+            ),
+            (
+                "CREATE VIEW v AS (SELECT a FROM x) LIMIT 1",
+                "CREATE VIEW v AS SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1",
+            ),
+            (
+                "SELECT ((SELECT a FROM x) LIMIT 1)",
+                "SELECT (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1)",
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
     def test_wrapped_query_modifiers_leave_derived_tables_alone(self):
         derived = parse_one("SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2")
         for dialect, expected in (

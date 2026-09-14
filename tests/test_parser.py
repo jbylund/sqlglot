@@ -288,9 +288,9 @@ class TestParser(unittest.TestCase):
             "SELECT a FROM x LIMIT 2 OFFSET 1",
         )
 
-        self.assertIsInstance(
-            parse_one("(SELECT a FROM x) WHERE a > 2", read="postgres"), exp.Subquery
-        )
+        for sql in ("(SELECT a FROM x) WHERE a > 2", "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1"):
+            with self.subTest(sql):
+                self.assertIsInstance(parse_one(sql, read="postgres"), exp.Subquery)
 
     def test_wrapped_query_modifiers_duplicate_slot(self):
         for sql, clause in (
