@@ -291,6 +291,8 @@ class TestParser(unittest.TestCase):
                 self.assertEqual(parse_one(sql, read="postgres").sql("postgres"), expected)
 
     def test_wrapped_query_modifiers_not_merged(self):
+        # no engine accepts either shape after a parenthesized query; sqlglot parses the
+        # superset, and the point here is that the merge declines rather than guesses
         for sql in (
             "(SELECT a FROM x) WHERE a > 2",
             "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",

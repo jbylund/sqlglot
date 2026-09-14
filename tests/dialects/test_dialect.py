@@ -5157,10 +5157,6 @@ FROM subquery2""",
     def test_wrapped_query_modifiers_positions(self):
         for sql, expected in (
             (
-                "(SELECT a FROM x) TABLESAMPLE (10 PERCENT) LIMIT 1",
-                "SELECT * FROM (SELECT a FROM x) AS _t0 TABLESAMPLE (10) LIMIT 1",
-            ),
-            (
                 "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",
                 "SELECT * FROM (SELECT a FROM x) AS _t0 JOIN y ON TRUE LIMIT 1",
             ),
@@ -5181,8 +5177,8 @@ FROM subquery2""",
                 "SELECT (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1)",
             ),
             (
-                "SELECT * FROM y WHERE a IN ((SELECT a FROM x) LIMIT 2)",
-                "SELECT * FROM y WHERE a IN (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2)",
+                "SELECT * FROM y WHERE b IN ((SELECT a FROM x) LIMIT 2)",
+                "SELECT * FROM y WHERE b IN (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2)",
             ),
             (
                 "SELECT * FROM ((SELECT a FROM x) LIMIT 2) AS t",
@@ -5191,6 +5187,14 @@ FROM subquery2""",
         ):
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
+    def test_wrapped_query_modifiers_keep_sample(self):
+        # duckdb rather than postgres: postgres has no TABLESAMPLE on a subquery, so the
+        # rewritten SQL would not run there
+        self.assertEqual(
+            parse_one("(SELECT a FROM x) TABLESAMPLE (10 PERCENT) LIMIT 1").sql("duckdb"),
+            "SELECT * FROM (SELECT a FROM x) AS _t0 TABLESAMPLE (10 PERCENT) LIMIT 1",
+        )
 
     def test_wrapped_query_modifiers_leave_derived_tables_alone(self):
         derived = parse_one("SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2")
