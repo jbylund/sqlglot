@@ -5174,9 +5174,47 @@ FROM subquery2""",
                 "(SELECT a FROM x) JOIN (SELECT 1) AS _t0 ON TRUE LIMIT 1",
                 "SELECT * FROM (SELECT a FROM x) AS _t1 JOIN (SELECT 1) AS _t0 ON TRUE LIMIT 1",
             ),
+            (
+                "(SELECT a FROM x) CROSS JOIN LATERAL UNNEST(b) AS _t0 LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 CROSS JOIN LATERAL UNNEST(b) AS _t0 LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) CROSS JOIN UNNEST(b) AS _t0 LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 CROSS JOIN UNNEST(b) AS _t0 LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) CROSS JOIN (VALUES (1)) AS _t0(c) LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 CROSS JOIN (VALUES (1)) AS _t0(c) LIMIT 1",
+            ),
         ):
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
+    def test_wrapped_query_modifiers_built_tree(self):
+        # a parsed subquery always sits inside a redundant wrapper that supplies the parens the
+        # rewrite drops; a hand-built one does not, and has to be delimited the same way
+        def built():
+            subquery = parse_one("SELECT a FROM x").subquery()
+            subquery.set("limit", exp.Limit(expression=exp.Literal.number(1)))
+            return subquery
+
+        for parsed, tree in (
+            ("SELECT * FROM ((SELECT a FROM x) LIMIT 1)", exp.select("*").from_(built())),
+            ("SELECT ((SELECT a FROM x) LIMIT 1)", exp.select(built())),
+        ):
+            with self.subTest(parsed):
+                self.assertEqual(tree.sql("postgres"), parse_one(parsed).sql("postgres"))
+
+    def test_wrapped_query_modifiers_comments(self):
+        # the rewrite regenerates the subquery it wraps, so its comments must not be emitted twice
+        expression = parse_one("/* c */ (SELECT a FROM x) LIMIT 1", read="mysql")
+
+        for dialect, expected in (
+            ("mysql", "(SELECT a FROM x) LIMIT 1 /* c */"),
+            ("postgres", "/* c */ SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1"),
+        ):
+            with self.subTest(dialect):
+                self.assertEqual(expression.sql(dialect, comments=True), expected)
 
     def test_wrapped_query_modifiers_positions(self):
         for sql, expected in (
