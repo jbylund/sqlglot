@@ -5127,23 +5127,32 @@ FROM subquery2""",
             },
         )
 
+    def test_wrapped_query_modifiers_merged_source(self):
+        # a merged tree must stay flat, never re-wrap
         self.validate_all(
             "SELECT a FROM x LIMIT 3 OFFSET 1",
             read={"postgres": "(SELECT a FROM x LIMIT 3) OFFSET 1"},
             write={
                 "mysql": "SELECT a FROM x LIMIT 3 OFFSET 1",
                 "trino": "SELECT a FROM x OFFSET 1 LIMIT 3",
+                "sqlite": "SELECT a FROM x LIMIT 3 OFFSET 1",
             },
         )
 
-        flat = parse_one("(SELECT a FROM x LIMIT 3) OFFSET 1", read="postgres")
-        self.assertEqual(flat.sql("sqlite"), "SELECT a FROM x LIMIT 3 OFFSET 1")
-
-        # wrapped once, not once per rewrite: clickhouse also re-nests via SET_OP_MODIFIERS
-        self.assertEqual(
-            parse_one("(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2").sql("clickhouse"),
-            "SELECT * FROM (SELECT a FROM x UNION ALL SELECT b FROM y) AS _t0 LIMIT 2",
-        )
+    def test_wrapped_query_modifiers_wrap_once(self):
+        # clickhouse also re-nests set operation modifiers via SET_OP_MODIFIERS
+        for sql, expected in (
+            (
+                "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2",
+                "SELECT * FROM (SELECT a FROM x UNION ALL SELECT b FROM y) AS _t0 LIMIT 2",
+            ),
+            (
+                "((SELECT a FROM x) LIMIT 3) LIMIT 2",
+                "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS _t1 LIMIT 3) AS _t0 LIMIT 2",
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql).sql("clickhouse"), expected)
 
     def test_wrapped_query_modifiers_positions(self):
         for sql, expected in (

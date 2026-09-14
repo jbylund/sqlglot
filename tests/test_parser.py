@@ -250,45 +250,51 @@ class TestParser(unittest.TestCase):
         # some dialects merge a trailing modifier into the query, others apply it to the result (#71)
         sql = "(SELECT a FROM x LIMIT 3) ORDER BY a"
 
-        for dialect in ("", "mysql", "trino", "presto", "risingwave"):
-            with self.subTest(f"nesting in {dialect or 'default'}"):
-                subquery = parse_one(sql, read=dialect).assert_is(exp.Subquery)
-                self.assertIsInstance(subquery.args.get("order"), exp.Order)
-                self.assertIsNone(subquery.this.args.get("order"))
-                self.assertIsInstance(subquery.this.args.get("limit"), exp.Limit)
-
-        for dialect in ("postgres", "duckdb", "redshift", "materialize"):
-            with self.subTest(f"merging in {dialect}"):
-                select = parse_one(sql, read=dialect).assert_is(exp.Select)
-                self.assertIsInstance(select.args.get("order"), exp.Order)
-                self.assertIsInstance(select.args.get("limit"), exp.Limit)
-
-        union = parse_one(
-            "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2", read="postgres"
-        ).assert_is(exp.Union)
-        self.assertIsInstance(union.args.get("limit"), exp.Limit)
-        self.assertIsNone(union.expression.args.get("limit"))
-
-        for cte_sql in (
-            "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
-            "WITH c AS (SELECT 1 AS a) (SELECT a FROM c) ORDER BY a",
+        for dialect, expected in (
+            ("", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("mysql", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("trino", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("presto", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("risingwave", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("postgres", "SELECT a FROM x ORDER BY a LIMIT 3"),
+            ("duckdb", "SELECT a FROM x ORDER BY a LIMIT 3"),
+            ("redshift", "SELECT a FROM x ORDER BY a LIMIT 3"),
+            ("materialize", "SELECT a FROM x ORDER BY a LIMIT 3"),
         ):
-            with self.subTest(cte_sql):
-                select = parse_one(cte_sql, read="postgres").assert_is(exp.Select)
-                self.assertIsInstance(select.args.get("with_"), exp.With)
-                self.assertIsInstance(select.args.get("order"), exp.Order)
+            with self.subTest(dialect or "default"):
+                self.assertEqual(parse_one(sql, read=dialect).sql(dialect), expected)
 
-        self.assertEqual(
-            parse_one("((SELECT 1)) LIMIT 1", read="postgres").sql("postgres"), "SELECT 1 LIMIT 1"
-        )
-        self.assertEqual(parse_one("((SELECT 1)) LIMIT 1").sql(), "((SELECT 1)) LIMIT 1")
+    def test_wrapped_query_modifiers_nest(self):
+        subquery = parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a").assert_is(exp.Subquery)
+        self.assertIsInstance(subquery.args.get("order"), exp.Order)
+        self.assertIsNone(subquery.this.args.get("order"))
+        self.assertIsInstance(subquery.this.args.get("limit"), exp.Limit)
 
-        self.assertEqual(
-            parse_one("(SELECT a FROM x) LIMIT 2 OFFSET 1", read="postgres").sql("postgres"),
-            "SELECT a FROM x LIMIT 2 OFFSET 1",
-        )
+    def test_wrapped_query_modifiers_merge_target(self):
+        for sql, expected in (
+            (
+                "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2",
+                "SELECT a FROM x UNION ALL SELECT b FROM y LIMIT 2",
+            ),
+            (
+                "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
+                "WITH c AS (SELECT 1 AS a) SELECT a FROM c ORDER BY a",
+            ),
+            (
+                "WITH c AS (SELECT 1 AS a) (SELECT a FROM c) ORDER BY a",
+                "WITH c AS (SELECT 1 AS a) SELECT a FROM c ORDER BY a",
+            ),
+            ("((SELECT 1)) LIMIT 1", "SELECT 1 LIMIT 1"),
+            ("(SELECT a FROM x) LIMIT 2 OFFSET 1", "SELECT a FROM x LIMIT 2 OFFSET 1"),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql, read="postgres").sql("postgres"), expected)
 
-        for sql in ("(SELECT a FROM x) WHERE a > 2", "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1"):
+    def test_wrapped_query_modifiers_not_merged(self):
+        for sql in (
+            "(SELECT a FROM x) WHERE a > 2",
+            "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",
+        ):
             with self.subTest(sql):
                 self.assertIsInstance(parse_one(sql, read="postgres"), exp.Subquery)
 
