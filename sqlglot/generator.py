@@ -535,6 +535,12 @@ class Generator:
     # True means limit 1 happens after the set op, False means it it happens on y.
     SET_OP_MODIFIERS = True
 
+    # Whether a query modifier can trail a parenthesized query, eg. `(SELECT a FROM x) LIMIT 1`.
+    # False means it has to be applied to a derived table instead, because the dialect either
+    # rejects the syntax (ClickHouse, SQLite) or merges the modifier into the parentheses rather
+    # than applying it to their result (Postgres, DuckDB)
+    SUPPORTS_WRAPPED_QUERY_MODIFIERS = True
+
     # Whether parameters from COPY statement are wrapped in parentheses
     COPY_PARAMS_ARE_WRAPPED = True
 
@@ -3480,7 +3486,50 @@ class Generator:
     def placeholder_sql(self, expression: exp.Placeholder) -> str:
         return f"{self.NAMED_PLACEHOLDER_TOKEN}{expression.name}" if expression.this else "?"
 
+    def _wrapped_query_modifiers_sql(self, expression: exp.Subquery) -> str | None:
+        """Applies a trailing modifier to a derived table, for dialects that can't be handed one.
+
+        `(SELECT a FROM x LIMIT 3) ORDER BY a` becomes
+        `SELECT * FROM (SELECT a FROM x LIMIT 3) AS _t0 ORDER BY a`.
+        """
+        if not any(expression.args.get(key) for key in exp.TRAILING_QUERY_MODIFIERS):
+            return None
+
+        parent = expression.parent
+
+        # pivots and sample decorate the derived table itself, so they stay where they are
+        modifiers = {}
+        for key in (*exp.QUERY_MODIFIERS, "with_"):
+            if key in ("pivots", "sample"):
+                continue
+
+            value = expression.args.get(key)
+            if value:
+                modifiers[key] = value
+                expression.set(key, None)
+
+        expression.set("alias", exp.TableAlias(this=exp.to_identifier(self._next_name())))
+
+        select = exp.select("*", copy=False).from_(expression, copy=False)
+        for key, value in modifiers.items():
+            select.set(key, value)
+
+        select = self._move_ctes_to_top_level(select)
+
+        # the parentheses this Subquery used to supply are still needed, unless it is the whole
+        # statement or its parent is a Subquery that brings its own
+        return (
+            self.sql(select)
+            if parent is None or isinstance(parent, exp.Subquery)
+            else self.wrap(select)
+        )
+
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
+        if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and not expression.args.get("alias"):
+            wrapped = self._wrapped_query_modifiers_sql(expression)
+            if wrapped is not None:
+                return wrapped
+
         alias = self.sql(expression, "alias")
         alias = f"{sep}{alias}" if alias else ""
         sample = self.sql(expression, "sample")
