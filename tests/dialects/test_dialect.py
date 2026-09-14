@@ -5191,8 +5191,7 @@ FROM subquery2""",
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
 
     def test_wrapped_query_modifiers_built_tree(self):
-        # a parsed subquery always sits inside a redundant wrapper that supplies the parens the
-        # rewrite drops; a hand-built one does not, and has to be delimited the same way
+        # a hand-built subquery has no wrapper to supply the parens the rewrite drops
         def built():
             subquery = parse_one("SELECT a FROM x").subquery()
             subquery.set("limit", exp.Limit(expression=exp.Literal.number(1)))

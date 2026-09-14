@@ -4452,7 +4452,6 @@ class Parser:
                     merge_target.add_comments(node.pop_comments())
                     node = node.this
 
-                # the wrappers above it are discarded, so it must not keep pointing at them
                 this = merge_target.pop()
 
         if self.SUPPORTS_IMPLICIT_UNNEST and this and this.args.get("from_"):

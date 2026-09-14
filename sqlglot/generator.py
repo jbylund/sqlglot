@@ -3506,8 +3506,7 @@ class Generator:
 
         select = exp.select("*", copy=False).from_(expression, copy=False)
 
-        # the subquery is regenerated inside the rewrite, so its comments move up with the
-        # modifiers rather than being emitted there and again around the result
+        # the subquery is regenerated below, so its comments move up rather than doubling
         select.add_comments(expression.pop_comments())
 
         for key, value in modifiers.items():
@@ -3531,12 +3530,10 @@ class Generator:
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS:
-            # the rewrite reparents the subquery under the derived table it builds
-            parent = expression.parent
+            parent = expression.parent  # the rewrite reparents the subquery
             wrapped = self._wrapped_query_modifiers_sql(expression)
             if wrapped is not None:
-                # the rewrite yields a query, not a parenthesized one, so it still needs the
-                # parens this node would have emitted unless it stands where a query is legal
+                # a bare query still needs the parens this node would have supplied
                 if parent is None or isinstance(
                     parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
                 ):
