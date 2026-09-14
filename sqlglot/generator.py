@@ -3505,6 +3505,11 @@ class Generator:
                 expression.set(key, None)
 
         select = exp.select("*", copy=False).from_(expression, copy=False)
+
+        # the subquery is regenerated inside the rewrite, so its comments move up with the
+        # modifiers rather than being emitted there and again around the result
+        select.add_comments(expression.pop_comments())
+
         for key, value in modifiers.items():
             select.set(key, value)
 
