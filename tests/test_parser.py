@@ -290,6 +290,19 @@ class TestParser(unittest.TestCase):
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql, read="postgres").sql("postgres"), expected)
 
+    def test_wrapped_query_modifiers_detach_wrapper(self):
+        # the wrapper the merge discards must not stay on as the parent of the query it returns
+        for sql in (
+            "(SELECT a FROM x LIMIT 3) ORDER BY a",
+            "((SELECT 1)) LIMIT 1",
+            "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
+        ):
+            with self.subTest(sql):
+                merged = parse_one(sql, read="postgres")
+                self.assertIsNone(merged.parent)
+                self.assertIs(merged.root(), merged)
+                self.assertEqual(merged.depth, 0)
+
     def test_wrapped_query_modifiers_not_merged(self):
         # no engine accepts either shape after a parenthesized query; sqlglot parses the
         # superset, and the point here is that the merge declines rather than guesses

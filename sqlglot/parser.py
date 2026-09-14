@@ -4452,7 +4452,7 @@ class Parser:
                     merge_target.add_comments(node.pop_comments())
                     node = node.this
 
-                this = merge_target
+                this = merge_target.pop()
 
         if self.SUPPORTS_IMPLICIT_UNNEST and this and this.args.get("from_"):
             this = self._implicit_unnests_to_explicit(this)

@@ -3505,12 +3505,21 @@ class Generator:
                 expression.set(key, None)
 
         select = exp.select("*", copy=False).from_(expression, copy=False)
+
+        # the subquery is regenerated below, so its comments move up rather than doubling
+        select.add_comments(expression.pop_comments())
+
         for key, value in modifiers.items():
             select.set(key, value)
 
         if not expression.args.get("alias"):
             # joins and laterals are hoisted into the same FROM, so the name has to clear them
-            taken = {node.alias_or_name for node in select.find_all(exp.Table, exp.Subquery)}
+            taken = {
+                node.alias_or_name
+                for node in select.find_all(
+                    exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values
+                )
+            }
             name = self._next_name()
             while name in taken:
                 name = self._next_name()
@@ -3521,9 +3530,16 @@ class Generator:
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS:
+            parent = expression.parent  # the rewrite reparents the subquery
             wrapped = self._wrapped_query_modifiers_sql(expression)
             if wrapped is not None:
-                return wrapped
+                # a bare query still needs the parens this node would have supplied
+                if parent is None or isinstance(
+                    parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
+                ):
+                    return wrapped
+
+                return self.wrap(wrapped)
 
         alias = self.sql(expression, "alias")
         alias = f"{sep}{alias}" if alias else ""
