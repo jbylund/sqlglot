@@ -4396,6 +4396,13 @@ class Parser:
                             ):
                                 target = merge_target
                                 merged = True
+                            elif merged:
+                                self.raise_error(
+                                    f"'{modifier_token.text.upper()}' cannot follow a trailing modifier",
+                                    token=modifier_token,
+                                )
+                                merge_target = None
+                                merged = False
                             else:
                                 merge_target = None
 
