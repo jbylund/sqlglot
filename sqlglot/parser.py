@@ -4396,6 +4396,13 @@ class Parser:
                             ):
                                 target = merge_target
                                 merged = True
+                            elif merged:
+                                self.raise_error(
+                                    f"'{modifier_token.text.upper()}' cannot follow a trailing modifier",
+                                    token=modifier_token,
+                                )
+                                merge_target = None
+                                merged = False
                             else:
                                 merge_target = None
 
@@ -4427,6 +4434,13 @@ class Parser:
                             self.raise_error(
                                 "Found multiple 'START WITH' clauses", token=modifier_token
                             )
+
+                        if merged:
+                            self.raise_error(
+                                "'START WITH' cannot follow a trailing modifier",
+                                token=modifier_token,
+                            )
+                            merged = False
 
                         this.set("connect", connect)
                         continue

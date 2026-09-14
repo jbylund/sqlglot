@@ -324,6 +324,48 @@ class TestParser(unittest.TestCase):
             "SELECT a FROM x LIMIT 2",
         )
 
+    def test_wrapped_query_modifiers_connect(self):
+        # START WITH cannot be folded in, and the collapse must not drop it on the floor
+        sql = "(SELECT a FROM x) LIMIT 1 START WITH a = 1 CONNECT BY PRIOR a = a"
+
+        with self.assertRaises(ParseError) as ctx:
+            parse_one(sql, read="postgres")
+        self.assertIn("'START WITH' cannot follow a trailing modifier", str(ctx.exception))
+
+        self.assertEqual(
+            parse_one(sql, read="postgres", error_level=ErrorLevel.IGNORE).sql("postgres"),
+            "(SELECT a FROM x LIMIT 1) START WITH a = 1 CONNECT BY PRIOR a = a",
+        )
+
+    def test_wrapped_query_modifiers_after_trailing(self):
+        # postgres and duckdb reject a non-trailing clause that follows a trailing one,
+        # so the merge cannot keep folding and cannot fall back to applying it to the result
+        for sql, clause in (
+            ("(SELECT a FROM x) LIMIT 1 WHERE a > 2", "WHERE"),
+            ("(SELECT a FROM x) ORDER BY a TABLESAMPLE (10)", "TABLESAMPLE"),
+            ("(SELECT a FROM x) LIMIT 1 GROUP BY a", "GROUP BY"),
+            ("(VALUES (1)) LIMIT 1 FOR UPDATE", "FOR"),
+        ):
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(f"{sql} in {dialect}"):
+                    with self.assertRaises(ParseError) as ctx:
+                        parse_one(sql, read=dialect)
+                    self.assertIn(
+                        f"'{clause}' cannot follow a trailing modifier", str(ctx.exception)
+                    )
+
+            with self.subTest(f"{sql} nests"):
+                self.assertIsInstance(parse_one(sql), exp.Subquery)
+
+        self.assertEqual(
+            parse_one(
+                "(SELECT a FROM x) LIMIT 1 WHERE a > 2",
+                read="postgres",
+                error_level=ErrorLevel.IGNORE,
+            ).sql("postgres"),
+            "(SELECT a FROM x LIMIT 1) WHERE a > 2",
+        )
+
     def test_union(self):
         self.assertIsInstance(parse_one("SELECT * FROM (SELECT 1) UNION SELECT 2"), exp.Union)
         self.assertIsInstance(
