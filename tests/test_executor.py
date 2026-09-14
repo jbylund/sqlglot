@@ -591,6 +591,34 @@ class TestExecutor(unittest.TestCase):
                 self.assertEqual(len(rows), count)
                 self.assertLessEqual(set(rows), allowed)
 
+    def test_wrapped_query_modifiers(self):
+        schema = {"x": {"a": "int"}, "y": {"b": "int"}}
+        tables = {"x": [{"a": a} for a in (3, 1, 5, 2, 4)], "y": [{"b": 7}, {"b": 6}]}
+
+        for sql, expected in (
+            ("(SELECT a FROM x) ORDER BY a", [(1,), (2,), (3,), (4,), (5,)]),
+            ("(SELECT a FROM x) ORDER BY a LIMIT 2", [(1,), (2,)]),
+            ("(SELECT a FROM x) ORDER BY a LIMIT 2 OFFSET 1", [(2,), (3,)]),
+            ("(SELECT a FROM x) ORDER BY a OFFSET 3", [(4,), (5,)]),
+            ("(SELECT a FROM x ORDER BY a) LIMIT 2", [(1,), (2,)]),
+            # the wrapper's modifiers apply on top of the wrapped query's own
+            ("(SELECT a FROM x ORDER BY a LIMIT 3) ORDER BY a DESC", [(3,), (2,), (1,)]),
+            ("(SELECT a FROM x ORDER BY a LIMIT 2) LIMIT 5", [(1,), (2,)]),
+            ("((SELECT a FROM x ORDER BY a) LIMIT 3) LIMIT 2", [(1,), (2,)]),
+            (
+                "(SELECT a FROM x UNION ALL SELECT b FROM y) ORDER BY a LIMIT 3",
+                [(1,), (2,), (3,)],
+            ),
+            ("(SELECT a, COUNT(*) AS c FROM x GROUP BY a) ORDER BY a LIMIT 2", [(1, 1), (2, 1)]),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(execute(sql, schema, tables=tables).rows, expected)
+
+        # row order is unspecified without ORDER BY, so assert cardinality and membership
+        rows = execute("(SELECT a FROM x) LIMIT 2", schema, tables=tables).rows
+        self.assertEqual(len(rows), 2)
+        self.assertLessEqual(set(rows), {(a,) for a in (3, 1, 5, 2, 4)})
+
     def test_outer_joins_preserve_unmatched_rows(self):
         tables = {
             "x": [{"id": 1}, {"id": 2}],

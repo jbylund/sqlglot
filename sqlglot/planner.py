@@ -44,6 +44,14 @@ class Plan:
         return f"Plan\n----\n{repr(self.root)}"
 
 
+_next_nested_name = name_sequence("_q_")
+
+
+def _modifiers(expression: exp.Expr) -> bool:
+    """Whether a query wrapper carries modifiers of its own, eg. `(SELECT ...) LIMIT 1`."""
+    return any(expression.args.get(arg) is not None for arg in exp.QUERY_MODIFIERS)
+
+
 class Step:
     @classmethod
     def from_expression(cls, expression: exp.Expr, ctes: dict[str, Step] | None = None) -> Step:
@@ -95,7 +103,12 @@ class Step:
             A Step DAG corresponding to `expression`.
         """
         ctes = ctes or {}
-        expression = expression.unnest()
+
+        # a wrapper can carry its own modifiers, eg. `(SELECT ...) LIMIT 1`, so it can only be
+        # unnested while it's a plain wrapper - otherwise those modifiers would be lost
+        while isinstance(expression, exp.Subquery) and not _modifiers(expression):
+            expression = expression.this
+
         with_: exp.With | None = expression.args.get("with_")
 
         # CTEs break the mold of scope and introduce themselves to all in the context.
@@ -112,6 +125,8 @@ class Step:
             step = Scan.from_expression(from_.this, ctes)
         elif isinstance(expression, exp.SetOperation):
             step = SetOperation.from_expression(expression, ctes)
+        elif isinstance(expression, exp.Subquery):
+            step = Scan.from_nested_query(expression, ctes)
         else:
             step = Scan()
 
@@ -354,7 +369,7 @@ class Scan(Step):
         alias_ = expression.alias_or_name
 
         if isinstance(expression, exp.Subquery):
-            table = expression.this
+            table = expression if _modifiers(expression) else expression.this
             step = Step.from_expression(table, ctes)
             step.name = alias_
             return step
@@ -364,6 +379,21 @@ class Scan(Step):
         step.source = expression
         if ctes and table.name in ctes:
             step.add_dependency(ctes[table.name])
+
+        return step
+
+    @classmethod
+    def from_nested_query(
+        cls, expression: exp.Subquery, ctes: dict[str, Step] | None = None
+    ) -> Scan:
+        """Scans the output of a wrapped query, so that the wrapper's modifiers apply on top of it."""
+        inner = Step.from_expression(expression.this, ctes)
+        inner.name = inner.name or _next_nested_name()
+
+        step = Scan()
+        step.name = inner.name
+        step.source = exp.to_table(inner.name)
+        step.add_dependency(inner)
 
         return step
 

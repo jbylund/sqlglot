@@ -237,7 +237,7 @@ class PythonExecutor:
         if source is None:
             context, table_iter = self.static()
         elif source in context:
-            if not step.projections and not step.condition:
+            if not step.projections and not step.condition and math.isinf(step.limit):
                 return self.context({step.name: context.tables[source]})
             table_iter = context.table_iter(source)
         else:
