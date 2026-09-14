@@ -4440,6 +4440,7 @@ class Parser:
                                 "'START WITH' cannot follow a trailing modifier",
                                 token=modifier_token,
                             )
+                            merge_target = None
                             merged = False
 
                         this.set("connect", connect)

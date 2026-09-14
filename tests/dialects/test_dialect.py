@@ -5197,9 +5197,21 @@ FROM subquery2""",
             subquery.set("limit", exp.Limit(expression=exp.Literal.number(1)))
             return subquery
 
+        def aliased():
+            subquery = built()
+            subquery.set("alias", exp.TableAlias(this=exp.to_identifier("t")))
+            return subquery
+
         for parsed, tree in (
             ("SELECT * FROM ((SELECT a FROM x) LIMIT 1)", exp.select("*").from_(built())),
             ("SELECT ((SELECT a FROM x) LIMIT 1)", exp.select(built())),
+            # parsing splits the alias onto a wrapper, so a built tree is the only way to
+            # reach the rewrite with one attached - it names the relation the modifier
+            # produces and has to stay outside
+            (
+                "SELECT t.a FROM ((SELECT a FROM x) LIMIT 1) AS t",
+                exp.select("t.a").from_(aliased()),
+            ),
         ):
             with self.subTest(parsed):
                 self.assertEqual(tree.sql("postgres"), parse_one(parsed).sql("postgres"))

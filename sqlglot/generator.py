@@ -3485,15 +3485,12 @@ class Generator:
     def placeholder_sql(self, expression: exp.Placeholder) -> str:
         return f"{self.NAMED_PLACEHOLDER_TOKEN}{expression.name}" if expression.this else "?"
 
-    def _wrapped_query_modifiers_sql(self, expression: exp.Subquery) -> str | None:
+    def _wrapped_query_modifiers_sql(self, expression: exp.Subquery) -> str:
         """Applies a trailing modifier to a derived table, for dialects that can't be handed one.
 
         `(SELECT a FROM x LIMIT 3) ORDER BY a` becomes
         `SELECT * FROM (SELECT a FROM x LIMIT 3) AS _t0 ORDER BY a`.
         """
-        if not any(expression.args.get(key) for key in exp.TRAILING_QUERY_MODIFIERS):
-            return None
-
         modifiers = {}
         for key in (*exp.QUERY_MODIFIERS, "with_"):
             if key in ("pivots", "sample"):
@@ -3529,17 +3526,27 @@ class Generator:
         return self.sql(self._move_ctes_to_top_level(select))
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
-        if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS:
-            parent = expression.parent  # the rewrite reparents the subquery
-            wrapped = self._wrapped_query_modifiers_sql(expression)
-            if wrapped is not None:
-                # a bare query still needs the parens this node would have supplied
-                if parent is None or isinstance(
-                    parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
-                ):
-                    return wrapped
+        if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and any(
+            expression.args.get(key) for key in exp.TRAILING_QUERY_MODIFIERS
+        ):
+            # read before the rewrite reparents it: a bare query still needs the parens this
+            # node would have supplied, unless the parent supplies them itself
+            needs_parens = expression.parent is not None and not isinstance(
+                expression.parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
+            )
 
-                return self.wrap(wrapped)
+            # an alias names the relation the modifier produces, not the query inside the
+            # parens, so it belongs outside the rewrite - where there is a slot for it
+            table_alias = expression.args.get("alias") if needs_parens else None
+            if table_alias:
+                expression.set("alias", None)
+
+            wrapped = self._wrapped_query_modifiers_sql(expression)
+            if not needs_parens:
+                return wrapped
+
+            wrapped = self.wrap(wrapped)
+            return f"{wrapped}{sep}{self.sql(table_alias)}" if table_alias else wrapped
 
         alias = self.sql(expression, "alias")
         alias = f"{sep}{alias}" if alias else ""

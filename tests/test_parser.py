@@ -338,17 +338,27 @@ class TestParser(unittest.TestCase):
         )
 
     def test_wrapped_query_modifiers_connect(self):
-        # START WITH cannot be folded in, and the collapse must not drop it on the floor
-        sql = "(SELECT a FROM x) LIMIT 1 START WITH a = 1 CONNECT BY PRIOR a = a"
+        # START WITH cannot be folded in, and the collapse must not drop it on the floor,
+        # including when a further trailing modifier follows the CONNECT BY
+        for tail, expected in (
+            ("", "(SELECT a FROM x LIMIT 1) START WITH a = 1 CONNECT BY PRIOR a = a"),
+            (
+                " ORDER BY a",
+                "SELECT * FROM (SELECT a FROM x LIMIT 1) AS _t0 START WITH a = 1 "
+                "CONNECT BY PRIOR a = a ORDER BY a",
+            ),
+        ):
+            sql = f"(SELECT a FROM x) LIMIT 1 START WITH a = 1 CONNECT BY PRIOR a = a{tail}"
 
-        with self.assertRaises(ParseError) as ctx:
-            parse_one(sql, read="postgres")
-        self.assertIn("'START WITH' cannot follow a trailing modifier", str(ctx.exception))
+            with self.subTest(sql):
+                with self.assertRaises(ParseError) as ctx:
+                    parse_one(sql, read="postgres")
+                self.assertIn("'START WITH' cannot follow a trailing modifier", str(ctx.exception))
 
-        self.assertEqual(
-            parse_one(sql, read="postgres", error_level=ErrorLevel.IGNORE).sql("postgres"),
-            "(SELECT a FROM x LIMIT 1) START WITH a = 1 CONNECT BY PRIOR a = a",
-        )
+                self.assertEqual(
+                    parse_one(sql, read="postgres", error_level=ErrorLevel.IGNORE).sql("postgres"),
+                    expected,
+                )
 
     def test_wrapped_query_modifiers_after_trailing(self):
         # postgres and duckdb reject a non-trailing clause that follows a trailing one,
