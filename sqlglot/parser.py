@@ -4435,6 +4435,13 @@ class Parser:
                                 "Found multiple 'START WITH' clauses", token=modifier_token
                             )
 
+                        if merged:
+                            self.raise_error(
+                                "'START WITH' cannot follow a trailing modifier",
+                                token=modifier_token,
+                            )
+                            merged = False
+
                         this.set("connect", connect)
                         continue
                 break
