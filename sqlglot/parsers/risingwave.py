@@ -8,6 +8,8 @@ from sqlglot.tokens import TokenType
 
 class RisingWaveParser(PostgresParser):
     WRAPPED_TRANSFORM_COLUMN_CONSTRAINT = False
+    # unlike Postgres, RisingWave applies a trailing modifier to the wrapped query's result
+    MODIFIERS_MERGED_INTO_WRAPPED_QUERY = False
 
     PROPERTY_PARSERS = {
         **PostgresParser.PROPERTY_PARSERS,

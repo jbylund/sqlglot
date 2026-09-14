@@ -392,6 +392,26 @@ class TestOptimizer(unittest.TestCase):
 
         self.check_file("normalize", normalize, schema=self.schema)
 
+    def test_wrapped_query_modifiers(self):
+        # a modifier trailing a parenthesized query stays on the wrapper in the base dialect,
+        # and qualification has to reach into it
+        self.assertEqual(
+            optimizer.optimize(
+                parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a"), schema={"x": {"a": "int"}}
+            ).sql(),
+            '(SELECT "x"."a" AS "a" FROM "x" AS "x" LIMIT 3) ORDER BY "a"',
+        )
+
+        # postgres merges it, so the optimizer sees a plain Select
+        self.assertEqual(
+            optimizer.optimize(
+                parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a", read="postgres"),
+                schema={"x": {"a": "int"}},
+                dialect="postgres",
+            ).sql("postgres"),
+            'SELECT "x"."a" AS "a" FROM "x" AS "x" ORDER BY "a" LIMIT 3',
+        )
+
     @patch("sqlglot.generator.logger")
     def test_qualify_columns(self, logger):
         self.assertEqual(

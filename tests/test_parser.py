@@ -246,6 +246,84 @@ class TestParser(unittest.TestCase):
         tables = [t.sql() for t in parse_one("select * from a, b.c, .d").find_all(exp.Table)]
         self.assertEqual(set(tables), {"a", "b.c", "d"})
 
+    def test_wrapped_query_modifiers(self):
+        # a modifier trailing a parenthesized query merges into that query in some dialects and
+        # applies to its result in others - see the survey in issue #71
+        sql = "(SELECT a FROM x LIMIT 3) ORDER BY a"
+
+        for dialect in ("", "mysql", "trino", "presto", "risingwave"):
+            with self.subTest(f"nesting in {dialect or 'default'}"):
+                subquery = parse_one(sql, read=dialect).assert_is(exp.Subquery)
+                self.assertIsInstance(subquery.args.get("order"), exp.Order)
+                self.assertIsNone(subquery.this.args.get("order"))
+                self.assertIsInstance(subquery.this.args.get("limit"), exp.Limit)
+
+        for dialect in ("postgres", "duckdb", "redshift", "materialize"):
+            with self.subTest(f"merging in {dialect}"):
+                # the wrapper is gone entirely, not merely emptied
+                select = parse_one(sql, read=dialect).assert_is(exp.Select)
+                self.assertIsInstance(select.args.get("order"), exp.Order)
+                self.assertIsInstance(select.args.get("limit"), exp.Limit)
+
+        # the merge target is the set operation itself, not its right operand
+        union = parse_one(
+            "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2", read="postgres"
+        ).assert_is(exp.Union)
+        self.assertIsInstance(union.args.get("limit"), exp.Limit)
+        self.assertIsNone(union.expression.args.get("limit"))
+
+        # a CTE must survive the merge, whether it sits inside or outside the parentheses
+        for cte_sql in (
+            "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
+            "WITH c AS (SELECT 1 AS a) (SELECT a FROM c) ORDER BY a",
+        ):
+            with self.subTest(cte_sql):
+                select = parse_one(cte_sql, read="postgres").assert_is(exp.Select)
+                self.assertIsInstance(select.args.get("with_"), exp.With)
+                self.assertIsInstance(select.args.get("order"), exp.Order)
+
+        # every layer of pure wrapping is unwrapped, not just the outermost
+        self.assertEqual(
+            parse_one("((SELECT 1)) LIMIT 1", read="postgres").sql("postgres"), "SELECT 1 LIMIT 1"
+        )
+        self.assertEqual(parse_one("((SELECT 1)) LIMIT 1").sql(), "((SELECT 1)) LIMIT 1")
+
+        # the OFFSET split out of a LIMIT lands on the merge target too
+        self.assertEqual(
+            parse_one("(SELECT a FROM x) LIMIT 2 OFFSET 1", read="postgres").sql("postgres"),
+            "SELECT a FROM x LIMIT 2 OFFSET 1",
+        )
+
+        # a modifier that can't merge leaves the parentheses meaningful
+        self.assertIsInstance(
+            parse_one("(SELECT a FROM x) WHERE a > 2", read="postgres"), exp.Subquery
+        )
+
+    def test_wrapped_query_modifiers_duplicate_slot(self):
+        # postgres and duckdb reject a modifier whose slot the wrapped query already fills
+        for sql, clause in (
+            ("(SELECT a FROM x LIMIT 3) LIMIT 2", "LIMIT"),
+            ("(SELECT a FROM x ORDER BY a) ORDER BY a DESC", "ORDER BY"),
+            ("(SELECT a FROM x OFFSET 1) OFFSET 2", "OFFSET"),
+        ):
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(f"{sql} in {dialect}"):
+                    with self.assertRaises(ParseError) as ctx:
+                        parse_one(sql, read=dialect)
+                    self.assertIn(f"Found multiple '{clause}' clauses", str(ctx.exception))
+
+            with self.subTest(f"{sql} nests"):
+                self.assertIsInstance(parse_one(sql), exp.Subquery)
+
+        self.assertEqual(
+            parse_one(
+                "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                read="postgres",
+                error_level=ErrorLevel.IGNORE,
+            ).sql("postgres"),
+            "SELECT a FROM x LIMIT 2",
+        )
+
     def test_union(self):
         self.assertIsInstance(parse_one("SELECT * FROM (SELECT 1) UNION SELECT 2"), exp.Union)
         self.assertIsInstance(

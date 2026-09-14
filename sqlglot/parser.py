@@ -1868,6 +1868,11 @@ class Parser:
     MODIFIERS_ATTACHED_TO_SET_OP: t.ClassVar = True
     SET_OP_MODIFIERS: t.ClassVar = {"order", "limit", "offset", "sort", "distribute", "cluster"}
 
+    # Whether a query modifier trailing a parenthesized query is merged into that query, eg.
+    # Postgres reads `(SELECT a FROM x LIMIT 3) ORDER BY a` as `SELECT a FROM x ORDER BY a LIMIT 3`,
+    # rather than applying the modifier to the query's result the way a derived table would
+    MODIFIERS_MERGED_INTO_WRAPPED_QUERY: t.ClassVar = False
+
     # Whether to parse IF statements that aren't followed by a left parenthesis as commands
     NO_PAREN_IF_COMMANDS: t.ClassVar = True
 
@@ -4346,6 +4351,24 @@ class Parser:
 
         return this
 
+    def _wrapped_query_merge_target(self, this: exp.Expr) -> exp.Expr | None:
+        """The query a trailing modifier folds into, eg. `SELECT 1` in `((SELECT 1)) LIMIT 1`."""
+        if not self.MODIFIERS_MERGED_INTO_WRAPPED_QUERY or not isinstance(this, exp.Subquery):
+            return None
+
+        target: exp.Expr = this
+        while isinstance(target, exp.Subquery):
+            # anything else on the wrapper, eg. an alias or a pivot, makes the parentheses
+            # a derived table rather than mere grouping, so the modifier can't move inside.
+            # `Subquery.is_wrapper` is too strict here - it tests for None, and some dialects
+            # leave falsy-but-set args like `join_mark` on every node
+            if any(v for k, v in target.args.items() if k != "this"):
+                return None
+
+            target = target.this
+
+        return target if isinstance(target, (exp.Query, exp.Values)) else None
+
     @t.overload
     def _parse_query_modifiers(self, this: E) -> E: ...
 
@@ -4359,6 +4382,10 @@ class Parser:
             for lateral in iter(self._parse_lateral, None):
                 this.append("laterals", lateral)
 
+            # computed after the joins/laterals above, so that either one cancels the merge
+            merge_target = self._wrapped_query_merge_target(this)
+            merged = False
+
             while True:
                 if self._match_set(self.QUERY_MODIFIER_PARSERS, advance=False):
                     modifier_token = self._curr
@@ -4366,20 +4393,33 @@ class Parser:
                     key, expression = parser(self)
 
                     if expression:
-                        if this.args.get(key):
+                        target = this
+
+                        if merge_target is not None:
+                            if (
+                                key in exp.TRAILING_QUERY_MODIFIERS
+                                and key in merge_target.arg_types
+                            ):
+                                target = merge_target
+                                merged = True
+                            else:
+                                # a modifier that can't merge makes the parentheses meaningful
+                                merge_target = None
+
+                        if target.args.get(key):
                             self.raise_error(
                                 f"Found multiple '{modifier_token.text.upper()}' clauses",
                                 token=modifier_token,
                             )
 
-                        this.set(key, expression)
+                        target.set(key, expression)
                         if key == "limit":
                             offset = expression.args.get("offset")
                             expression.set("offset", None)
 
                             if offset:
                                 offset = exp.Offset(expression=offset)
-                                this.set("offset", offset)
+                                target.set("offset", offset)
 
                                 limit_by_expressions = expression.expressions
                                 expression.set("expressions", None)
@@ -4398,6 +4438,15 @@ class Parser:
                         this.set("connect", connect)
                         continue
                 break
+
+            if merged:
+                # the wrapper only grouped the query, and its modifiers now live inside
+                node = this
+                while node is not merge_target:
+                    merge_target.add_comments(node.pop_comments())
+                    node = node.this
+
+                this = merge_target
 
         if self.SUPPORTS_IMPLICIT_UNNEST and this and this.args.get("from_"):
             this = self._implicit_unnests_to_explicit(this)

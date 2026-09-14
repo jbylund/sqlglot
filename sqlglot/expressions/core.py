@@ -2492,6 +2492,19 @@ QUERY_MODIFIERS = {
 }
 
 
+# Modifiers that may trail a parenthesized query, eg. `(SELECT a FROM x LIMIT 3) ORDER BY a`.
+# Some dialects merge these into the query they follow instead of applying them to its result.
+TRAILING_QUERY_MODIFIERS = (
+    "order",
+    "limit",
+    "offset",
+    "sort",
+    "cluster",
+    "distribute",
+    "locks",
+)
+
+
 TIMESTAMP_PARTS = {
     "year": False,
     "month": False,
