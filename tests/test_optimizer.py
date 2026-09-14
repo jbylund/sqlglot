@@ -393,8 +393,7 @@ class TestOptimizer(unittest.TestCase):
         self.check_file("normalize", normalize, schema=self.schema)
 
     def test_wrapped_query_modifiers(self):
-        # a modifier trailing a parenthesized query stays on the wrapper in the base dialect,
-        # and qualification has to reach into it
+        # the base dialect keeps the wrapper, and qualification has to reach into its modifiers
         self.assertEqual(
             optimizer.optimize(
                 parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a"), schema={"x": {"a": "int"}}

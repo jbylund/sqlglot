@@ -1868,9 +1868,8 @@ class Parser:
     MODIFIERS_ATTACHED_TO_SET_OP: t.ClassVar = True
     SET_OP_MODIFIERS: t.ClassVar = {"order", "limit", "offset", "sort", "distribute", "cluster"}
 
-    # Whether a query modifier trailing a parenthesized query is merged into that query, eg.
-    # Postgres reads `(SELECT a FROM x LIMIT 3) ORDER BY a` as `SELECT a FROM x ORDER BY a LIMIT 3`,
-    # rather than applying the modifier to the query's result the way a derived table would
+    # Whether a modifier trailing a parenthesized query merges into it (Postgres reads
+    # `(SELECT a FROM x LIMIT 3) ORDER BY a` as `SELECT a FROM x ORDER BY a LIMIT 3`)
     MODIFIERS_MERGED_INTO_WRAPPED_QUERY: t.ClassVar = False
 
     # Whether to parse IF statements that aren't followed by a left parenthesis as commands
@@ -4358,10 +4357,8 @@ class Parser:
 
         target: exp.Expr = this
         while isinstance(target, exp.Subquery):
-            # anything else on the wrapper, eg. an alias or a pivot, makes the parentheses
-            # a derived table rather than mere grouping, so the modifier can't move inside.
-            # `Subquery.is_wrapper` is too strict here - it tests for None, and some dialects
-            # leave falsy-but-set args like `join_mark` on every node
+            # anything else on the wrapper makes it a derived table, not mere grouping. Not
+            # `is_wrapper`: it tests for None, and some dialects set falsy args like `join_mark`
             if any(v for k, v in target.args.items() if k != "this"):
                 return None
 
@@ -4382,7 +4379,7 @@ class Parser:
             for lateral in iter(self._parse_lateral, None):
                 this.append("laterals", lateral)
 
-            # computed after the joins/laterals above, so that either one cancels the merge
+            # after the loops above, so that a join or lateral cancels the merge
             merge_target = self._wrapped_query_merge_target(this)
             merged = False
 
@@ -4403,7 +4400,6 @@ class Parser:
                                 target = merge_target
                                 merged = True
                             else:
-                                # a modifier that can't merge makes the parentheses meaningful
                                 merge_target = None
 
                         if target.args.get(key):
@@ -4440,7 +4436,6 @@ class Parser:
                 break
 
             if merged:
-                # the wrapper only grouped the query, and its modifiers now live inside
                 node = this
                 while node is not merge_target:
                     merge_target.add_comments(node.pop_comments())

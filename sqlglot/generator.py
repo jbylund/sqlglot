@@ -536,9 +536,8 @@ class Generator:
     SET_OP_MODIFIERS = True
 
     # Whether a query modifier can trail a parenthesized query, eg. `(SELECT a FROM x) LIMIT 1`.
-    # False means it has to be applied to a derived table instead, because the dialect either
-    # rejects the syntax (ClickHouse, SQLite) or merges the modifier into the parentheses rather
-    # than applying it to their result (Postgres, DuckDB)
+    # False means a derived table has to carry it instead, because the dialect either rejects the
+    # syntax (ClickHouse, SQLite) or merges it into the parentheses (Postgres, DuckDB)
     SUPPORTS_WRAPPED_QUERY_MODIFIERS = True
 
     # Whether parameters from COPY statement are wrapped in parentheses
@@ -3497,7 +3496,7 @@ class Generator:
 
         parent = expression.parent
 
-        # pivots and sample decorate the derived table itself, so they stay where they are
+        # pivots and sample decorate the derived table itself, so they stay put
         modifiers = {}
         for key in (*exp.QUERY_MODIFIERS, "with_"):
             if key in ("pivots", "sample"):
@@ -3516,8 +3515,7 @@ class Generator:
 
         select = self._move_ctes_to_top_level(select)
 
-        # the parentheses this Subquery used to supply are still needed, unless it is the whole
-        # statement or its parent is a Subquery that brings its own
+        # the parentheses this Subquery supplied are still needed, unless the parent brings its own
         return (
             self.sql(select)
             if parent is None or isinstance(parent, exp.Subquery)

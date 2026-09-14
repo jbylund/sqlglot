@@ -5079,19 +5079,16 @@ FROM subquery2""",
 
     # dialects that merge a trailing modifier into the parenthesized query it follows
     MERGE_WRAPPED_MODIFIERS = {"postgres", "duckdb", "redshift", "materialize"}
-    # dialects that must never be handed the bare `(Q) <modifier>` form, because they either
-    # merge it (above) or reject the syntax outright (clickhouse, sqlite)
+    # ... plus those that reject the syntax, which also must never be handed the bare form
     NO_BARE_WRAPPED_MODIFIERS = MERGE_WRAPPED_MODIFIERS | {"clickhouse", "sqlite"}
 
     def test_wrapped_query_modifier_flags(self):
-        # asserted through behaviour rather than the flags themselves, since mypyc turns class
-        # attributes into descriptors and the compiled build can't read them back
+        # behaviour, not the flags: mypyc turns class attributes into unreadable descriptors
         nested = parse_one("(SELECT a FROM x LIMIT 3) LIMIT 2")
 
         for dialect in Dialects:
             name = dialect.value
-            if name in ("dax", "prql"):
-                # not SQL, and neither parses the shape
+            if name in ("dax", "prql"):  # not SQL
                 continue
 
             with self.subTest(f"wrapped modifier handling in {name or 'default'}"):
@@ -5151,8 +5148,7 @@ FROM subquery2""",
         flat = parse_one("(SELECT a FROM x LIMIT 3) OFFSET 1", read="postgres")
         self.assertEqual(flat.sql("sqlite"), "SELECT a FROM x LIMIT 3 OFFSET 1")
 
-        # a wrapped set operation must be wrapped once, not once per rewrite - clickhouse also
-        # re-nests set operation modifiers via SET_OP_MODIFIERS
+        # wrapped once, not once per rewrite: clickhouse also re-nests via SET_OP_MODIFIERS
         self.assertEqual(
             parse_one("(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2").sql("clickhouse"),
             "SELECT * FROM (SELECT a FROM x UNION ALL SELECT b FROM y) AS _t0 LIMIT 2",
@@ -5177,7 +5173,7 @@ FROM subquery2""",
             with self.subTest(f"derived table in {dialect or 'default'}"):
                 self.assertEqual(derived.sql(dialect), expected)
 
-        # pivots, sample and joins decorate the Subquery itself and must survive untouched
+        # pivots and joins decorate the Subquery itself and must survive untouched
         for sql, dialect in (
             ("SELECT * FROM (SELECT a, b FROM x) AS t PIVOT(SUM(b) FOR a IN ('p'))", "duckdb"),
             ("SELECT * FROM ((SELECT 1 AS x) CROSS JOIN (SELECT 2 AS y)) AS z", "postgres"),

@@ -247,8 +247,7 @@ class TestParser(unittest.TestCase):
         self.assertEqual(set(tables), {"a", "b.c", "d"})
 
     def test_wrapped_query_modifiers(self):
-        # a modifier trailing a parenthesized query merges into that query in some dialects and
-        # applies to its result in others - see the survey in issue #71
+        # some dialects merge a trailing modifier into the query, others apply it to the result (#71)
         sql = "(SELECT a FROM x LIMIT 3) ORDER BY a"
 
         for dialect in ("", "mysql", "trino", "presto", "risingwave"):
@@ -272,7 +271,7 @@ class TestParser(unittest.TestCase):
         self.assertIsInstance(union.args.get("limit"), exp.Limit)
         self.assertIsNone(union.expression.args.get("limit"))
 
-        # a CTE must survive the merge, whether it sits inside or outside the parentheses
+        # a CTE must survive, whether it sits inside or outside the parentheses
         for cte_sql in (
             "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
             "WITH c AS (SELECT 1 AS a) (SELECT a FROM c) ORDER BY a",
@@ -300,7 +299,6 @@ class TestParser(unittest.TestCase):
         )
 
     def test_wrapped_query_modifiers_duplicate_slot(self):
-        # postgres and duckdb reject a modifier whose slot the wrapped query already fills
         for sql, clause in (
             ("(SELECT a FROM x LIMIT 3) LIMIT 2", "LIMIT"),
             ("(SELECT a FROM x ORDER BY a) ORDER BY a DESC", "ORDER BY"),
