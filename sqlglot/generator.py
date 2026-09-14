@@ -3510,7 +3510,12 @@ class Generator:
 
         if not expression.args.get("alias"):
             # joins and laterals are hoisted into the same FROM, so the name has to clear them
-            taken = {node.alias_or_name for node in select.find_all(exp.Table, exp.Subquery)}
+            taken = {
+                node.alias_or_name
+                for node in select.find_all(
+                    exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values
+                )
+            }
             name = self._next_name()
             while name in taken:
                 name = self._next_name()
