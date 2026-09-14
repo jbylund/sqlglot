@@ -5163,6 +5163,21 @@ FROM subquery2""",
                     "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS t LIMIT 1)",
                 )
 
+    def test_wrapped_query_modifiers_alias_collision(self):
+        # the synthetic name has to clear relations hoisted into the same FROM
+        for sql, expected in (
+            (
+                "(SELECT a FROM x) JOIN _t0 ON TRUE LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 JOIN _t0 ON TRUE LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) JOIN (SELECT 1) AS _t0 ON TRUE LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 JOIN (SELECT 1) AS _t0 ON TRUE LIMIT 1",
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
     def test_wrapped_query_modifiers_positions(self):
         for sql, expected in (
             (

@@ -3504,12 +3504,18 @@ class Generator:
                 modifiers[key] = value
                 expression.set(key, None)
 
-        if not expression.args.get("alias"):
-            expression.set("alias", exp.TableAlias(this=exp.to_identifier(self._next_name())))
-
         select = exp.select("*", copy=False).from_(expression, copy=False)
         for key, value in modifiers.items():
             select.set(key, value)
+
+        if not expression.args.get("alias"):
+            # joins and laterals are hoisted into the same FROM, so the name has to clear them
+            taken = {node.alias_or_name for node in select.find_all(exp.Table, exp.Subquery)}
+            name = self._next_name()
+            while name in taken:
+                name = self._next_name()
+
+            expression.set("alias", exp.TableAlias(this=exp.to_identifier(name)))
 
         return self.sql(self._move_ctes_to_top_level(select))
 
