@@ -5154,6 +5154,15 @@ FROM subquery2""",
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("clickhouse"), expected)
 
+    def test_wrapped_query_modifiers_aliased(self):
+        # an alias on the subquery is reused by the rewrite instead of blocking it
+        for dialect in ("sqlite", "postgres", "duckdb"):
+            with self.subTest(dialect):
+                self.assertEqual(
+                    parse_one("SELECT * FROM ((SELECT a FROM x) AS t LIMIT 1)").sql(dialect),
+                    "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS t LIMIT 1)",
+                )
+
     def test_wrapped_query_modifiers_positions(self):
         for sql, expected in (
             (
