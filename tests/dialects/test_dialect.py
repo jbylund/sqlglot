@@ -5127,11 +5127,6 @@ FROM subquery2""",
             },
         )
 
-        nested = parse_one("(SELECT a FROM x LIMIT 3) LIMIT 2")
-        for dialect in self.NO_BARE_WRAPPED_MODIFIERS:
-            with self.subTest(f"no bare wrapped modifiers for {dialect}"):
-                self.assertNotRegex(nested.sql(dialect), r"^\s*\(")
-
         self.validate_all(
             "SELECT a FROM x LIMIT 3 OFFSET 1",
             read={"postgres": "(SELECT a FROM x LIMIT 3) OFFSET 1"},
@@ -5176,6 +5171,14 @@ FROM subquery2""",
                 "SELECT ((SELECT a FROM x) LIMIT 1)",
                 "SELECT (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1)",
             ),
+            (
+                "SELECT * FROM y WHERE a IN ((SELECT a FROM x) LIMIT 2)",
+                "SELECT * FROM y WHERE a IN (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2)",
+            ),
+            (
+                "SELECT * FROM ((SELECT a FROM x) LIMIT 2) AS t",
+                "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2) AS t",
+            ),
         ):
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
@@ -5204,23 +5207,6 @@ FROM subquery2""",
         ):
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql, read=dialect).sql(dialect), sql)
-
-        for sql, expected in (
-            (
-                "SELECT ((SELECT a FROM x) LIMIT 1)",
-                "SELECT (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1)",
-            ),
-            (
-                "SELECT * FROM y WHERE a IN ((SELECT a FROM x) LIMIT 2)",
-                "SELECT * FROM y WHERE a IN (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2)",
-            ),
-            (
-                "SELECT * FROM ((SELECT a FROM x) LIMIT 2) AS t",
-                "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2) AS t",
-            ),
-        ):
-            with self.subTest(sql):
-                self.assertEqual(parse_one(sql).sql("postgres"), expected)
 
     def test_subquery_unwrap(self):
         self.validate_identity(
