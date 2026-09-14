@@ -601,7 +601,9 @@ class TestExecutor(unittest.TestCase):
             ("(SELECT a FROM x) ORDER BY a LIMIT 2 OFFSET 1", [(2,), (3,)]),
             ("(SELECT a FROM x) ORDER BY a OFFSET 3", [(4,), (5,)]),
             ("(SELECT a FROM x ORDER BY a) LIMIT 2", [(1,), (2,)]),
-            # the wrapper's modifiers apply on top of the wrapped query's own
+            # the wrapper's modifiers apply on top of the wrapped query's own, which is what
+            # postgres and duckdb do for `SELECT * FROM (...) AS t <modifier>`. Both reject
+            # these bare, folding a trailing modifier into the parens instead - see #71
             ("(SELECT a FROM x ORDER BY a LIMIT 3) ORDER BY a DESC", [(3,), (2,), (1,)]),
             ("(SELECT a FROM x ORDER BY a LIMIT 2) LIMIT 5", [(1,), (2,)]),
             ("((SELECT a FROM x ORDER BY a) LIMIT 3) LIMIT 2", [(1,), (2,)]),
