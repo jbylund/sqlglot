@@ -610,6 +610,13 @@ class TestExecutor(unittest.TestCase):
                 [(1,), (2,), (3,)],
             ),
             ("(SELECT a, COUNT(*) AS c FROM x GROUP BY a) ORDER BY a LIMIT 2", [(1, 1), (2, 1)]),
+            # both wrappers wrap a step the query doesn't name, so the two need distinct
+            # names of their own - one shadows the other otherwise
+            (
+                "((SELECT a FROM x UNION ALL SELECT b FROM y ORDER BY a) LIMIT 1)"
+                " UNION ALL ((SELECT a FROM x UNION ALL SELECT b FROM y ORDER BY a) LIMIT 2)",
+                [(1,), (1,), (2,)],
+            ),
         ):
             with self.subTest(sql):
                 self.assertEqual(execute(sql, schema, tables=tables).rows, expected)

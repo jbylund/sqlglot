@@ -7,7 +7,7 @@ from sqlglot import alias, exp
 from sqlglot.helper import name_sequence
 from sqlglot.optimizer.eliminate_joins import join_condition
 from sqlglot.optimizer.scope import find_all_in_scope, find_in_scope
-from collections.abc import Iterator, Sequence, Iterable
+from collections.abc import Callable, Iterator, Sequence, Iterable
 
 
 class Plan:
@@ -15,7 +15,10 @@ class Plan:
         self.expression: exp.Expr = expression.copy()
         with_: exp.With | None = self.expression.args.get("with_")
         self.ctes: exp.With | None = with_.copy() if with_ is not None else None
-        self.root: Step = Step.from_expression(self.expression)
+        # names the intermediate steps of a query that doesn't name them itself, eg. the
+        # `SELECT 1 UNION SELECT 2` wrapped by `(SELECT 1 UNION SELECT 2) LIMIT 1`
+        self.next_nested_name: Callable[[], str] = name_sequence("_q_")
+        self.root: Step = Step.from_expression(self.expression, next_name=self.next_nested_name)
         self._dag: dict[Step, set[Step]] = {}
 
     @property
@@ -44,17 +47,22 @@ class Plan:
         return f"Plan\n----\n{repr(self.root)}"
 
 
-_next_nested_name = name_sequence("_q_")
+def _has_modifiers(subquery: exp.Subquery) -> bool:
+    """Whether a query wrapper carries modifiers of its own, eg. `(SELECT ...) LIMIT 1`.
 
-
-def _modifiers(expression: exp.Expr) -> bool:
-    """Whether a query wrapper carries modifiers of its own, eg. `(SELECT ...) LIMIT 1`."""
-    return any(expression.args.get(arg) is not None for arg in exp.QUERY_MODIFIERS)
+    This is `Subquery.is_wrapper`, except that `alias` and `with_` don't count as modifiers.
+    """
+    return any(subquery.args.get(arg) is not None for arg in exp.QUERY_MODIFIERS)
 
 
 class Step:
     @classmethod
-    def from_expression(cls, expression: exp.Expr, ctes: dict[str, Step] | None = None) -> Step:
+    def from_expression(
+        cls,
+        expression: exp.Expr,
+        ctes: dict[str, Step] | None = None,
+        next_name: Callable[[], str] | None = None,
+    ) -> Step:
         """
         Builds a DAG of Steps from a SQL expression so that it's easier to execute in an engine.
         Note: the expression's tables and subqueries must be aliased for this method to work. For
@@ -98,15 +106,18 @@ class Step:
         Args:
             expression: the expression to build the DAG from.
             ctes: a dictionary that maps CTEs to their corresponding Step DAG by name.
+            next_name: names the steps the query doesn't name itself; must be shared by the
+                whole DAG, so that two such steps never collide in the same context.
 
         Returns:
             A Step DAG corresponding to `expression`.
         """
         ctes = ctes or {}
+        next_name = next_name or name_sequence("_q_")
 
         # a wrapper can carry its own modifiers, eg. `(SELECT ...) LIMIT 1`, so it can only be
         # unnested while it's a plain wrapper - otherwise those modifiers would be lost
-        while isinstance(expression, exp.Subquery) and not _modifiers(expression):
+        while isinstance(expression, exp.Subquery) and not _has_modifiers(expression):
             expression = expression.this
 
         with_: exp.With | None = expression.args.get("with_")
@@ -115,25 +126,33 @@ class Step:
         if with_ is not None:
             ctes = ctes.copy()
             for cte in with_.expressions:
-                step = Step.from_expression(cte.this, ctes)
+                step = Step.from_expression(cte.this, ctes, next_name)
                 step.name = cte.alias
                 ctes[step.name] = step  # type: ignore
 
         from_ = expression.args.get("from_")
 
         if isinstance(expression, exp.Select) and from_:
-            step = Scan.from_expression(from_.this, ctes)
+            step = Scan.from_expression(from_.this, ctes, next_name)
         elif isinstance(expression, exp.SetOperation):
-            step = SetOperation.from_expression(expression, ctes)
+            step = SetOperation.from_expression(expression, ctes, next_name)
         elif isinstance(expression, exp.Subquery):
-            step = Scan.from_nested_query(expression, ctes)
+            # only a wrapper carrying modifiers of its own survives the loop above; scanning the
+            # wrapped query's step applies them on top of the wrapped query's own
+            inner = Step.from_expression(expression.this, ctes, next_name)
+            inner.name = inner.name or next_name()
+
+            step = Scan()
+            step.name = inner.name
+            step.source = exp.to_table(inner.name)
+            step.add_dependency(inner)
         else:
             step = Scan()
 
         joins: list[exp.Join] | None = expression.args.get("joins")
 
         if joins is not None:
-            join = Join.from_joins(joins, ctes)
+            join = Join.from_joins(joins, ctes, next_name)
             join.name = step.name
             join.source_name = step.name
             join.add_dependency(step)
@@ -364,13 +383,18 @@ class Step:
 
 class Scan(Step):
     @classmethod
-    def from_expression(cls, expression: exp.Expr, ctes: dict[str, Step] | None = None) -> Step:
+    def from_expression(
+        cls,
+        expression: exp.Expr,
+        ctes: dict[str, Step] | None = None,
+        next_name: Callable[[], str] | None = None,
+    ) -> Step:
         table: exp.Expr = expression
         alias_ = expression.alias_or_name
 
         if isinstance(expression, exp.Subquery):
-            table = expression if _modifiers(expression) else expression.this
-            step = Step.from_expression(table, ctes)
+            # `Step.from_expression` unnests a plain wrapper and keeps one carrying modifiers
+            step = Step.from_expression(expression, ctes, next_name)
             step.name = alias_
             return step
 
@@ -379,21 +403,6 @@ class Scan(Step):
         step.source = expression
         if ctes and table.name in ctes:
             step.add_dependency(ctes[table.name])
-
-        return step
-
-    @classmethod
-    def from_nested_query(
-        cls, expression: exp.Subquery, ctes: dict[str, Step] | None = None
-    ) -> Scan:
-        """Scans the output of a wrapped query, so that the wrapper's modifiers apply on top of it."""
-        inner = Step.from_expression(expression.this, ctes)
-        inner.name = inner.name or _next_nested_name()
-
-        step = Scan()
-        step.name = inner.name
-        step.source = exp.to_table(inner.name)
-        step.add_dependency(inner)
 
         return step
 
@@ -407,7 +416,12 @@ class Scan(Step):
 
 class Join(Step):
     @classmethod
-    def from_joins(cls, joins: Iterable[exp.Join], ctes: dict[str, Step] | None = None) -> Join:
+    def from_joins(
+        cls,
+        joins: Iterable[exp.Join],
+        ctes: dict[str, Step] | None = None,
+        next_name: Callable[[], str] | None = None,
+    ) -> Join:
         step = Join()
 
         for join in joins:
@@ -419,7 +433,7 @@ class Join(Step):
                 "condition": condition,
             }
 
-            step.add_dependency(Scan.from_expression(join.this, ctes))
+            step.add_dependency(Scan.from_expression(join.this, ctes, next_name))
 
         return step
 
@@ -493,14 +507,17 @@ class SetOperation(Step):
 
     @classmethod
     def from_expression(
-        cls, expression: exp.Expr, ctes: dict[str, Step] | None = None
+        cls,
+        expression: exp.Expr,
+        ctes: dict[str, Step] | None = None,
+        next_name: Callable[[], str] | None = None,
     ) -> SetOperation:
         assert isinstance(expression, exp.SetOperation)
 
-        left = Step.from_expression(expression.left, ctes)
+        left = Step.from_expression(expression.left, ctes, next_name)
         # SELECT 1 UNION SELECT 2  <-- these subqueries don't have names
         left.name = left.name or "left"
-        right = Step.from_expression(expression.right, ctes)
+        right = Step.from_expression(expression.right, ctes, next_name)
         right.name = right.name or "right"
         step = cls(
             op=expression.__class__,
