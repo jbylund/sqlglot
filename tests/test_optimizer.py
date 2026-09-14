@@ -401,7 +401,6 @@ class TestOptimizer(unittest.TestCase):
             '(SELECT "x"."a" AS "a" FROM "x" AS "x" LIMIT 3) ORDER BY "a"',
         )
 
-        # postgres merges it, so the optimizer sees a plain Select
         self.assertEqual(
             optimizer.optimize(
                 parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a", read="postgres"),

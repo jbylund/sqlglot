@@ -5077,9 +5077,8 @@ FROM subquery2""",
                     )
                     self.assertEqual(sql, "REGEXP_REPLACE('aaa', 'a', 'b', 'g')")
 
-    # dialects that merge a trailing modifier into the parenthesized query it follows
+    # dialects that merge a trailing modifier into the query, plus those that reject it (#71)
     MERGE_WRAPPED_MODIFIERS = {"postgres", "duckdb", "redshift", "materialize"}
-    # ... plus those that reject the syntax, which also must never be handed the bare form
     NO_BARE_WRAPPED_MODIFIERS = MERGE_WRAPPED_MODIFIERS | {"clickhouse", "sqlite"}
 
     def test_wrapped_query_modifier_flags(self):
@@ -5128,13 +5127,11 @@ FROM subquery2""",
             },
         )
 
-        # nothing that would misread the bare form may be handed it
         nested = parse_one("(SELECT a FROM x LIMIT 3) LIMIT 2")
         for dialect in self.NO_BARE_WRAPPED_MODIFIERS:
             with self.subTest(f"no bare wrapped modifiers for {dialect}"):
                 self.assertNotRegex(nested.sql(dialect), r"^\s*\(")
 
-        # the reverse direction: a merged tree must stay flat, never re-wrap
         self.validate_all(
             "SELECT a FROM x LIMIT 3 OFFSET 1",
             read={"postgres": "(SELECT a FROM x LIMIT 3) OFFSET 1"},
@@ -5144,7 +5141,6 @@ FROM subquery2""",
             },
         )
 
-        # an already-flat query must not be wrapped just because the target merges
         flat = parse_one("(SELECT a FROM x LIMIT 3) OFFSET 1", read="postgres")
         self.assertEqual(flat.sql("sqlite"), "SELECT a FROM x LIMIT 3 OFFSET 1")
 
@@ -5155,7 +5151,6 @@ FROM subquery2""",
         )
 
     def test_wrapped_query_modifiers_leave_derived_tables_alone(self):
-        # the modifiers here belong to the outer Select, so nothing may be rewritten
         derived = parse_one("SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2")
         for dialect, expected in (
             ("", "SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2"),
@@ -5173,7 +5168,6 @@ FROM subquery2""",
             with self.subTest(f"derived table in {dialect or 'default'}"):
                 self.assertEqual(derived.sql(dialect), expected)
 
-        # pivots and joins decorate the Subquery itself and must survive untouched
         for sql, dialect in (
             ("SELECT * FROM (SELECT a, b FROM x) AS t PIVOT(SUM(b) FOR a IN ('p'))", "duckdb"),
             ("SELECT * FROM ((SELECT 1 AS x) CROSS JOIN (SELECT 2 AS y)) AS z", "postgres"),
@@ -5181,7 +5175,6 @@ FROM subquery2""",
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql, read=dialect).sql(dialect), sql)
 
-        # a scalar or predicate subquery keeps its own parentheses, it does not gain a pair
         for sql, expected in (
             (
                 "SELECT ((SELECT a FROM x) LIMIT 1)",

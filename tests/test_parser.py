@@ -259,19 +259,16 @@ class TestParser(unittest.TestCase):
 
         for dialect in ("postgres", "duckdb", "redshift", "materialize"):
             with self.subTest(f"merging in {dialect}"):
-                # the wrapper is gone entirely, not merely emptied
                 select = parse_one(sql, read=dialect).assert_is(exp.Select)
                 self.assertIsInstance(select.args.get("order"), exp.Order)
                 self.assertIsInstance(select.args.get("limit"), exp.Limit)
 
-        # the merge target is the set operation itself, not its right operand
         union = parse_one(
             "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2", read="postgres"
         ).assert_is(exp.Union)
         self.assertIsInstance(union.args.get("limit"), exp.Limit)
         self.assertIsNone(union.expression.args.get("limit"))
 
-        # a CTE must survive, whether it sits inside or outside the parentheses
         for cte_sql in (
             "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
             "WITH c AS (SELECT 1 AS a) (SELECT a FROM c) ORDER BY a",
@@ -281,19 +278,16 @@ class TestParser(unittest.TestCase):
                 self.assertIsInstance(select.args.get("with_"), exp.With)
                 self.assertIsInstance(select.args.get("order"), exp.Order)
 
-        # every layer of pure wrapping is unwrapped, not just the outermost
         self.assertEqual(
             parse_one("((SELECT 1)) LIMIT 1", read="postgres").sql("postgres"), "SELECT 1 LIMIT 1"
         )
         self.assertEqual(parse_one("((SELECT 1)) LIMIT 1").sql(), "((SELECT 1)) LIMIT 1")
 
-        # the OFFSET split out of a LIMIT lands on the merge target too
         self.assertEqual(
             parse_one("(SELECT a FROM x) LIMIT 2 OFFSET 1", read="postgres").sql("postgres"),
             "SELECT a FROM x LIMIT 2 OFFSET 1",
         )
 
-        # a modifier that can't merge leaves the parentheses meaningful
         self.assertIsInstance(
             parse_one("(SELECT a FROM x) WHERE a > 2", read="postgres"), exp.Subquery
         )
