@@ -891,6 +891,7 @@ class Generator:
         "_escaped_byte_quote_end",
         "_escaped_identifier_end",
         "_next_name",
+        "_taken_relation_names",
         "_identifier_start",
         "_identifier_end",
         "_quote_json_path_key_using_brackets",
@@ -944,6 +945,7 @@ class Generator:
         self._escaped_identifier_end = self.dialect.IDENTIFIER_END * 2
 
         self._next_name = name_sequence("_t")
+        self._taken_relation_names: set[str] = set()
 
         self._identifier_start = self.dialect.IDENTIFIER_START
         self._identifier_end = self.dialect.IDENTIFIER_END
@@ -3509,17 +3511,28 @@ class Generator:
         for key, value in modifiers.items():
             select.set(key, value)
 
+        # the wrapper is detached, so a rewrite nested inside it can no longer reach the
+        # enclosing query's relations - hand them down instead
+        taken = self._taken_relation_names
         if not expression.args.get("alias"):
             relations = (exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values)
             scopes = (select,) if outer is None else (select, outer.root())
-            taken = {node.alias_or_name for scope in scopes for node in scope.find_all(*relations)}
+            taken = taken.union(
+                node.alias_or_name for scope in scopes for node in scope.find_all(*relations)
+            )
             name = self._next_name()
             while name in taken:
                 name = self._next_name()
 
+            taken.add(name)
             expression.set("alias", exp.TableAlias(this=exp.to_identifier(name)))
 
-        return self.sql(self._move_ctes_to_top_level(select))
+        enclosing = self._taken_relation_names
+        self._taken_relation_names = taken
+        try:
+            return self.sql(self._move_ctes_to_top_level(select))
+        finally:
+            self._taken_relation_names = enclosing
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and any(

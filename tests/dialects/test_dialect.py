@@ -5198,6 +5198,21 @@ FROM subquery2""",
             "(SELECT * FROM (SELECT a FROM y WHERE y.b = _t0.b) AS _t1 ORDER BY a)",
         )
 
+    def test_wrapped_query_modifiers_alias_collision_nested(self):
+        # the outer rewrite detaches the subtree, so the inner one is handed the enclosing
+        # relations rather than reading them off a root it can no longer reach
+        self.assertEqual(
+            parse_one(
+                "SELECT * FROM x AS _t1 WHERE _t1.a IN "
+                "((SELECT a FROM y WHERE y.b IN ((SELECT c FROM z) ORDER BY _t1.d)) LIMIT 2)",
+                read="spark",
+            ).sql("postgres"),
+            "SELECT * FROM x AS _t1 WHERE _t1.a IN ("
+            "SELECT * FROM (SELECT a FROM y WHERE y.b IN ("
+            "SELECT * FROM (SELECT c FROM z) AS _t2 ORDER BY _t1.d NULLS FIRST"
+            ")) AS _t0 LIMIT 2)",
+        )
+
     def test_wrapped_query_modifiers_built_tree(self):
         # a hand-built subquery has no wrapper to supply the parens the rewrite drops
         def built():
