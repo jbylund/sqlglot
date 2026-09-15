@@ -1908,8 +1908,9 @@ class Generator:
         if not self.SET_OP_MODIFIERS:
             limit = expression.args.get("limit")
             order = expression.args.get("order")
+            offset = expression.args.get("offset")
 
-            if limit or order:
+            if limit or order or offset:
                 select = self._move_ctes_to_top_level(
                     exp.subquery(expression, "_l_0", copy=False).select("*", copy=False)
                 )
@@ -1918,8 +1919,6 @@ class Generator:
                     select = select.limit(limit.pop(), copy=False)
                 if order:
                     select = select.order_by(order.pop(), copy=False)
-
-                offset = expression.args.get("offset")
                 if offset:
                     select = select.offset(offset.pop(), copy=False)
                 return self.sql(select)
@@ -3498,6 +3497,12 @@ class Generator:
         """
         outer = expression.parent
 
+        # the relations a lock names live in the query, so it follows them inside
+        locks = expression.args.get("locks")
+        if locks and "locks" in expression.this.arg_types:
+            expression.set("locks", None)
+            expression.this.set("locks", [*(expression.this.args.get("locks") or []), *locks])
+
         modifiers = {}
         for key in (*exp.QUERY_MODIFIERS, "with_"):
             if key in ("pivots", "sample"):
@@ -3539,7 +3544,7 @@ class Generator:
 
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and any(
-            expression.args.get(key) for key in exp.TRAILING_QUERY_MODIFIERS
+            expression.args.get(key) for key in exp.NESTING_QUERY_MODIFIERS
         ):
             # read before the rewrite reparents it: a bare query still needs these parens
             needs_parens = expression.parent is not None and not isinstance(

@@ -2096,6 +2096,16 @@ class TestDialect(Validator):
             },
         )
 
+        # an offset is a reason to nest on its own, or it binds to the last branch
+        self.validate_all(
+            "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
+            write={
+                "": "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
+                "clickhouse": "SELECT * FROM (SELECT * FROM a UNION DISTINCT SELECT * FROM b) AS _l_0 OFFSET 1",
+                "tsql": "SELECT * FROM (SELECT * FROM a UNION SELECT * FROM b) AS _l_0 ORDER BY (SELECT NULL) OFFSET 1 ROWS",
+            },
+        )
+
         # an offset left behind in the derived table would skip rows before the order by
         self.validate_all(
             "SELECT * FROM a UNION SELECT * FROM b ORDER BY x LIMIT 1 OFFSET 1",
@@ -5287,6 +5297,24 @@ FROM subquery2""",
         ):
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
+    def test_wrapped_query_modifiers_locks(self):
+        # a lock names relations inside the query, so it follows them into the derived table
+        for sql, expected in (
+            ("(SELECT a FROM x) FOR UPDATE OF x", "(SELECT a FROM x) FOR UPDATE OF x"),
+            (
+                "(SELECT a FROM x) LIMIT 3 FOR UPDATE OF x",
+                "SELECT * FROM (SELECT a FROM x FOR UPDATE OF x) AS _t0 LIMIT 3",
+            ),
+            (
+                "(SELECT a FROM x FOR UPDATE) LIMIT 3 FOR SHARE",
+                "SELECT * FROM (SELECT a FROM x FOR UPDATE FOR SHARE) AS _t0 LIMIT 3",
+            ),
+        ):
+            with self.subTest(sql):
+                expression = parse_one(sql, read="mysql")
+                self.assertEqual(expression.sql("postgres"), expected)
+                self.assertEqual(expression.sql("mysql"), sql)
 
     def test_wrapped_query_modifiers_keep_sample(self):
         # duckdb rather than postgres, which has no TABLESAMPLE on a subquery
