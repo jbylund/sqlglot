@@ -4407,7 +4407,7 @@ class Parser:
 
                         existing = target.args.get(key)
                         if existing:
-                            if key == "locks":
+                            if key == "locks" and target is merge_target:
                                 # postgres concatenates locking clauses instead of rejecting them
                                 expression = [*existing, *expression]
                             else:
