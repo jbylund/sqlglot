@@ -4405,11 +4405,16 @@ class Parser:
                             else:
                                 merge_target = None
 
-                        if target.args.get(key):
-                            self.raise_error(
-                                f"Found multiple '{modifier_token.text.upper()}' clauses",
-                                token=modifier_token,
-                            )
+                        existing = target.args.get(key)
+                        if existing:
+                            if key == "locks":
+                                # postgres concatenates locking clauses instead of rejecting them
+                                expression = [*existing, *expression]
+                            else:
+                                self.raise_error(
+                                    f"Found multiple '{modifier_token.text.upper()}' clauses",
+                                    token=modifier_token,
+                                )
 
                         target.set(key, expression)
                         if key == "limit":
