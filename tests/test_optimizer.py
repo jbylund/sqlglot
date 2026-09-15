@@ -392,6 +392,23 @@ class TestOptimizer(unittest.TestCase):
 
         self.check_file("normalize", normalize, schema=self.schema)
 
+    def test_wrapped_query_modifiers(self):
+        self.assertEqual(
+            optimizer.optimize(
+                parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a"), schema={"x": {"a": "int"}}
+            ).sql(),
+            '(SELECT "x"."a" AS "a" FROM "x" AS "x" LIMIT 3) ORDER BY "a"',
+        )
+
+        self.assertEqual(
+            optimizer.optimize(
+                parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a", read="postgres"),
+                schema={"x": {"a": "int"}},
+                dialect="postgres",
+            ).sql("postgres"),
+            'SELECT "x"."a" AS "a" FROM "x" AS "x" ORDER BY "a" LIMIT 3',
+        )
+
     @patch("sqlglot.generator.logger")
     def test_qualify_columns(self, logger):
         self.assertEqual(

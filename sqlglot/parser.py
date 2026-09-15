@@ -1868,6 +1868,9 @@ class Parser:
     MODIFIERS_ATTACHED_TO_SET_OP: t.ClassVar = True
     SET_OP_MODIFIERS: t.ClassVar = {"order", "limit", "offset", "sort", "distribute", "cluster"}
 
+    # Whether a modifier trailing a parenthesized query merges into it, as Postgres does
+    MODIFIERS_MERGED_INTO_WRAPPED_QUERY: t.ClassVar = False
+
     # Whether to parse IF statements that aren't followed by a left parenthesis as commands
     NO_PAREN_IF_COMMANDS: t.ClassVar = True
 
@@ -4346,6 +4349,20 @@ class Parser:
 
         return this
 
+    def _wrapped_query_merge_target(self, this: exp.Expr) -> exp.Expr | None:
+        """The query a trailing modifier folds into, eg. `SELECT 1` in `((SELECT 1)) LIMIT 1`."""
+        if not self.MODIFIERS_MERGED_INTO_WRAPPED_QUERY or not isinstance(this, exp.Subquery):
+            return None
+
+        target: exp.Expr = this
+        while isinstance(target, exp.Subquery):
+            if any(v for k, v in target.args.items() if k != "this"):
+                return None
+
+            target = target.this
+
+        return target if isinstance(target, (exp.Query, exp.Values)) else None
+
     @t.overload
     def _parse_query_modifiers(self, this: E) -> E: ...
 
@@ -4359,6 +4376,9 @@ class Parser:
             for lateral in iter(self._parse_lateral, None):
                 this.append("laterals", lateral)
 
+            merge_target = self._wrapped_query_merge_target(this)
+            merged = False
+
             while True:
                 if self._match_set(self.QUERY_MODIFIER_PARSERS, advance=False):
                     modifier_token = self._curr
@@ -4366,20 +4386,49 @@ class Parser:
                     key, expression = parser(self)
 
                     if expression:
-                        if this.args.get(key):
-                            self.raise_error(
-                                f"Found multiple '{modifier_token.text.upper()}' clauses",
-                                token=modifier_token,
-                            )
+                        target = this
 
-                        this.set(key, expression)
+                        if merge_target is not None:
+                            if (
+                                key in exp.TRAILING_QUERY_MODIFIERS
+                                and key in merge_target.arg_types
+                            ):
+                                target = merge_target
+                                merged = True
+                            elif merged:
+                                self.raise_error(
+                                    f"'{modifier_token.text.upper()}' cannot follow a trailing modifier",
+                                    token=modifier_token,
+                                )
+                                merge_target = None
+                                merged = False
+                            else:
+                                merge_target = None
+
+                        existing = target.args.get(key)
+                        if existing:
+                            if key == "locks" and target is merge_target:
+                                # postgres concatenates locking clauses instead of rejecting them
+                                expression = [*existing, *expression]
+                            else:
+                                self.raise_error(
+                                    f"Found multiple '{modifier_token.text.upper()}' clauses",
+                                    token=modifier_token,
+                                )
+
+                        target.set(key, expression)
                         if key == "limit":
                             offset = expression.args.get("offset")
                             expression.set("offset", None)
 
                             if offset:
+                                if target.args.get("offset"):
+                                    self.raise_error(
+                                        "Found multiple 'OFFSET' clauses", token=modifier_token
+                                    )
+
                                 offset = exp.Offset(expression=offset)
-                                this.set("offset", offset)
+                                target.set("offset", offset)
 
                                 limit_by_expressions = expression.expressions
                                 expression.set("expressions", None)
@@ -4395,9 +4444,27 @@ class Parser:
                                 "Found multiple 'START WITH' clauses", token=modifier_token
                             )
 
+                        if merged:
+                            self.raise_error(
+                                "'START WITH' cannot follow a trailing modifier",
+                                token=modifier_token,
+                            )
+                            merged = False
+
+                        # the clause lands on the wrapper the collapse would discard
+                        merge_target = None
+
                         this.set("connect", connect)
                         continue
                 break
+
+            if merged:
+                node = this
+                while node is not merge_target:
+                    merge_target.add_comments(node.pop_comments())
+                    node = node.this
+
+                this = merge_target.pop()
 
         if self.SUPPORTS_IMPLICIT_UNNEST and this and this.args.get("from_"):
             this = self._implicit_unnests_to_explicit(this)

@@ -535,6 +535,10 @@ class Generator:
     # True means limit 1 happens after the set op, False means it it happens on y.
     SET_OP_MODIFIERS = True
 
+    # Whether a query modifier can trail a parenthesized query, eg. `(SELECT a FROM x) LIMIT 1`
+    # False for dialects that reject the syntax and for those that merge it into the parens
+    SUPPORTS_WRAPPED_QUERY_MODIFIERS = True
+
     # Whether parameters from COPY statement are wrapped in parentheses
     COPY_PARAMS_ARE_WRAPPED = True
 
@@ -887,6 +891,7 @@ class Generator:
         "_escaped_byte_quote_end",
         "_escaped_identifier_end",
         "_next_name",
+        "_taken_relation_names",
         "_identifier_start",
         "_identifier_end",
         "_quote_json_path_key_using_brackets",
@@ -940,6 +945,7 @@ class Generator:
         self._escaped_identifier_end = self.dialect.IDENTIFIER_END * 2
 
         self._next_name = name_sequence("_t")
+        self._taken_relation_names: set[str] = set()
 
         self._identifier_start = self.dialect.IDENTIFIER_START
         self._identifier_end = self.dialect.IDENTIFIER_END
@@ -1902,8 +1908,9 @@ class Generator:
         if not self.SET_OP_MODIFIERS:
             limit = expression.args.get("limit")
             order = expression.args.get("order")
+            offset = expression.args.get("offset")
 
-            if limit or order:
+            if limit or order or offset:
                 select = self._move_ctes_to_top_level(
                     exp.subquery(expression, "_l_0", copy=False).select("*", copy=False)
                 )
@@ -1912,6 +1919,8 @@ class Generator:
                     select = select.limit(limit.pop(), copy=False)
                 if order:
                     select = select.order_by(order.pop(), copy=False)
+                if offset:
+                    select = select.offset(offset.pop(), copy=False)
                 return self.sql(select)
 
         sqls: list[str] = []
@@ -3480,7 +3489,80 @@ class Generator:
     def placeholder_sql(self, expression: exp.Placeholder) -> str:
         return f"{self.NAMED_PLACEHOLDER_TOKEN}{expression.name}" if expression.this else "?"
 
+    def _wrapped_query_modifiers_sql(self, expression: exp.Subquery) -> str:
+        """Applies a trailing modifier to a derived table, for dialects that can't be handed one.
+
+        `(SELECT a FROM x LIMIT 3) ORDER BY a` becomes
+        `SELECT * FROM (SELECT a FROM x LIMIT 3) AS _t0 ORDER BY a`.
+        """
+        outer = expression.parent
+
+        # the relations a lock names live in the query, so it follows them inside
+        locks = expression.args.get("locks")
+        if locks and "locks" in expression.this.arg_types:
+            expression.set("locks", None)
+            expression.this.set("locks", [*(expression.this.args.get("locks") or []), *locks])
+
+        modifiers = {}
+        for key in (*exp.QUERY_MODIFIERS, "with_"):
+            if key in ("pivots", "sample"):
+                continue
+
+            value = expression.args.get(key)
+            if value:
+                modifiers[key] = value
+                expression.set(key, None)
+
+        select = exp.select("*", copy=False).from_(expression, copy=False)
+
+        select.add_comments(expression.pop_comments())
+
+        for key, value in modifiers.items():
+            select.set(key, value)
+
+        # the wrapper is detached, so a nested rewrite can't reach the enclosing relations
+        taken = self._taken_relation_names
+        if not expression.args.get("alias"):
+            relations = (exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values)
+            scopes = (select,) if outer is None else (select, outer.root())
+            taken = taken.union(
+                node.alias_or_name for scope in scopes for node in scope.find_all(*relations)
+            )
+            name = self._next_name()
+            while name in taken:
+                name = self._next_name()
+
+            taken.add(name)
+            expression.set("alias", exp.TableAlias(this=exp.to_identifier(name)))
+
+        enclosing = self._taken_relation_names
+        self._taken_relation_names = taken
+        try:
+            return self.sql(self._move_ctes_to_top_level(select))
+        finally:
+            self._taken_relation_names = enclosing
+
     def subquery_sql(self, expression: exp.Subquery, sep: str = " AS ") -> str:
+        if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and any(
+            expression.args.get(key) for key in exp.NESTING_QUERY_MODIFIERS
+        ):
+            # read before the rewrite reparents it: a bare query still needs these parens
+            needs_parens = expression.parent is not None and not isinstance(
+                expression.parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
+            )
+
+            # the alias names the relation the modifier produces, so it stays outside
+            table_alias = expression.args.get("alias") if needs_parens else None
+            if table_alias:
+                expression.set("alias", None)
+
+            wrapped = self._wrapped_query_modifiers_sql(expression)
+            if not needs_parens:
+                return wrapped
+
+            wrapped = self.wrap(wrapped)
+            return f"{wrapped}{sep}{self.sql(table_alias)}" if table_alias else wrapped
+
         alias = self.sql(expression, "alias")
         alias = f"{sep}{alias}" if alias else ""
         sample = self.sql(expression, "sample")

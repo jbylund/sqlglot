@@ -85,6 +85,7 @@ def _build_levenshtein_less_equal(args: list) -> exp.Levenshtein:
 
 class PostgresParser(parser.Parser):
     SUPPORTS_OMITTED_INTERVAL_SPAN_UNIT = True
+    MODIFIERS_MERGED_INTO_WRAPPED_QUERY = True
 
     # The one-byte "char" type is distinct from CHAR, and it can only be referenced by
     # quoting it: https://www.postgresql.org/docs/current/datatype-character.html

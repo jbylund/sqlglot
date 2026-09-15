@@ -1551,6 +1551,7 @@ def _sha_sql(
 
 
 class DuckDBGenerator(generator.Generator):
+    SUPPORTS_WRAPPED_QUERY_MODIFIERS = False
     PARAMETER_TOKEN = "$"
     NAMED_PLACEHOLDER_TOKEN = "$"
     JOIN_HINTS = False

@@ -254,6 +254,7 @@ def _round_sql(self: PostgresGenerator, expression: exp.Round) -> str:
 
 
 class PostgresGenerator(generator.Generator):
+    SUPPORTS_WRAPPED_QUERY_MODIFIERS = False
     SELECT_KINDS: tuple[str, ...] = ()
     TRY_SUPPORTED = False
     SUPPORTS_DECODE_CASE = False
