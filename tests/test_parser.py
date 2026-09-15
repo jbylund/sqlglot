@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from sqlglot import Parser, exp, parse, parse_one
+from sqlglot.dialects import Dialect
 from sqlglot.errors import ErrorLevel, ParseError
 from sqlglot.parser import logger as parser_logger
 from tests.helpers import assert_logger_contains
@@ -345,6 +346,22 @@ class TestParser(unittest.TestCase):
             parse_one("(SELECT a FROM x FOR UPDATE) FOR SHARE", read="mysql").sql("mysql"),
             "(SELECT a FROM x FOR UPDATE) FOR SHARE",
         )
+
+        def fills_the_locks_slot(dialect: str) -> bool:
+            # tsql routes FOR elsewhere, and a few dialects parse no SELECT at all
+            try:
+                lock = parse_one("SELECT a FROM x FOR UPDATE", read=dialect)
+            except ParseError:
+                return False
+
+            return bool(lock.args.get("locks"))
+
+        # the concatenation belongs to the fold, so an unwrapped duplicate still raises
+        for dialect in filter(fills_the_locks_slot, Dialect.classes):
+            with self.subTest(dialect):
+                with self.assertRaises(ParseError) as ctx:
+                    parse_one("SELECT a FROM x FOR UPDATE LIMIT 1 FOR SHARE", read=dialect)
+                self.assertIn("Found multiple 'FOR' clauses", str(ctx.exception))
 
     def test_wrapped_query_modifiers_connect(self):
         for tail, expected in (

@@ -1918,6 +1918,10 @@ class Generator:
                     select = select.limit(limit.pop(), copy=False)
                 if order:
                     select = select.order_by(order.pop(), copy=False)
+
+                offset = expression.args.get("offset")
+                if offset:
+                    select = select.offset(offset.pop(), copy=False)
                 return self.sql(select)
 
         sqls: list[str] = []
