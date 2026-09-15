@@ -5199,8 +5199,6 @@ FROM subquery2""",
         )
 
     def test_wrapped_query_modifiers_alias_collision_nested(self):
-        # the outer rewrite detaches the subtree, so the inner one is handed the enclosing
-        # relations rather than reading them off a root it can no longer reach
         self.assertEqual(
             parse_one(
                 "SELECT * FROM x AS _t1 WHERE _t1.a IN "

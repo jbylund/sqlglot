@@ -336,7 +336,7 @@ class TestParser(unittest.TestCase):
         )
 
     def test_wrapped_query_modifiers_locks(self):
-        # postgres concatenates locking clauses where it rejects a second ORDER BY or LIMIT
+        # duckdb shares the merge flag but rejects locking clauses outright
         self.assertEqual(
             parse_one("(SELECT a FROM x FOR UPDATE) FOR SHARE", read="postgres").sql("postgres"),
             "SELECT a FROM x FOR UPDATE FOR SHARE",

@@ -3511,8 +3511,7 @@ class Generator:
         for key, value in modifiers.items():
             select.set(key, value)
 
-        # the wrapper is detached, so a rewrite nested inside it can no longer reach the
-        # enclosing query's relations - hand them down instead
+        # the wrapper is detached, so a nested rewrite can't reach the enclosing relations
         taken = self._taken_relation_names
         if not expression.args.get("alias"):
             relations = (exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values)
