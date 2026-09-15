@@ -4440,8 +4440,10 @@ class Parser:
                                 "'START WITH' cannot follow a trailing modifier",
                                 token=modifier_token,
                             )
-                            merge_target = None
                             merged = False
+
+                        # the clause lands on the wrapper the collapse would discard
+                        merge_target = None
 
                         this.set("connect", connect)
                         continue
