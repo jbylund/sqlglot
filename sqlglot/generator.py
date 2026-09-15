@@ -3491,6 +3491,8 @@ class Generator:
         `(SELECT a FROM x LIMIT 3) ORDER BY a` becomes
         `SELECT * FROM (SELECT a FROM x LIMIT 3) AS _t0 ORDER BY a`.
         """
+        outer = expression.parent
+
         modifiers = {}
         for key in (*exp.QUERY_MODIFIERS, "with_"):
             if key in ("pivots", "sample"):
@@ -3510,13 +3512,11 @@ class Generator:
             select.set(key, value)
 
         if not expression.args.get("alias"):
-            # joins and laterals are hoisted into the same FROM, so the name has to clear them
-            taken = {
-                node.alias_or_name
-                for node in select.find_all(
-                    exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values
-                )
-            }
+            # joins and laterals are hoisted into the same FROM, and an enclosing query's
+            # names stay in scope for correlated references, so the name has to clear both
+            relations = (exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values)
+            scopes = (select,) if outer is None else (select, outer.root())
+            taken = {node.alias_or_name for scope in scopes for node in scope.find_all(*relations)}
             name = self._next_name()
             while name in taken:
                 name = self._next_name()
