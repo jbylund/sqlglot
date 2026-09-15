@@ -335,6 +335,17 @@ class TestParser(unittest.TestCase):
             "SELECT a FROM x LIMIT 2",
         )
 
+    def test_wrapped_query_modifiers_locks(self):
+        # duckdb shares the merge flag but rejects locking clauses outright
+        self.assertEqual(
+            parse_one("(SELECT a FROM x FOR UPDATE) FOR SHARE", read="postgres").sql("postgres"),
+            "SELECT a FROM x FOR UPDATE FOR SHARE",
+        )
+        self.assertEqual(
+            parse_one("(SELECT a FROM x FOR UPDATE) FOR SHARE", read="mysql").sql("mysql"),
+            "(SELECT a FROM x FOR UPDATE) FOR SHARE",
+        )
+
     def test_wrapped_query_modifiers_connect(self):
         for tail, expected in (
             ("", "(SELECT a FROM x LIMIT 1) START WITH a = 1 CONNECT BY PRIOR a = a"),
