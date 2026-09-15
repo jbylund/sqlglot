@@ -318,6 +318,7 @@ class TestParser(unittest.TestCase):
             ("(SELECT a FROM x LIMIT 3) LIMIT 2", "LIMIT"),
             ("(SELECT a FROM x ORDER BY a) ORDER BY a DESC", "ORDER BY"),
             ("(SELECT a FROM x OFFSET 1) OFFSET 2", "OFFSET"),
+            ("(SELECT a FROM x OFFSET 1) LIMIT 2, 3", "OFFSET"),
         ):
             for dialect in ("postgres", "duckdb"):
                 with self.subTest(f"{sql} in {dialect}"):
@@ -359,6 +360,21 @@ class TestParser(unittest.TestCase):
                     parse_one(sql, read="postgres", error_level=ErrorLevel.IGNORE).sql("postgres"),
                     expected,
                 )
+
+    def test_wrapped_query_modifiers_connect_first(self):
+        # the CONNECT BY lands on the wrapper, so a trailing modifier after it cannot fold
+        # into the query and pop that wrapper off, taking the clause with it
+        for tail in ("LIMIT 1", "ORDER BY a"):
+            sql = (
+                "SELECT * FROM ((SELECT a FROM x) "
+                f"START WITH a = 1 CONNECT BY PRIOR a = a {tail}) AS t"
+            )
+
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(f"{sql} in {dialect}"):
+                    wrapper = parse_one(sql, read=dialect).find(exp.From).this.this
+                    self.assertIsInstance(wrapper, exp.Subquery)
+                    self.assertIsInstance(wrapper.args.get("connect"), exp.Connect)
 
     def test_wrapped_query_modifiers_after_trailing(self):
         # postgres and duckdb reject a non-trailing clause that follows a trailing one,
@@ -1377,6 +1393,18 @@ class TestParser(unittest.TestCase):
             )
 
         self.assertIn("Found multiple 'START WITH' clauses. Line 1, Col: 65.", str(ctx.exception))
+
+        sql = "SELECT a FROM x OFFSET 1 LIMIT 2, 3"
+
+        with self.assertRaises(ParseError) as ctx:
+            parse_one(sql)
+
+        self.assertIn("Found multiple 'OFFSET' clauses. Line 1, Col: 30.", str(ctx.exception))
+
+        self.assertEqual(
+            parse_one(sql, error_level=ErrorLevel.IGNORE).sql(),
+            "SELECT a FROM x LIMIT 3 OFFSET 2",
+        )
 
     def test_window_clause_without_from(self):
         # https://github.com/tobymao/sqlglot/issues/7438

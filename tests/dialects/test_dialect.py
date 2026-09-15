@@ -5190,6 +5190,19 @@ FROM subquery2""",
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
 
+    def test_wrapped_query_modifiers_alias_collision_outer(self):
+        # the enclosing query's relations stay in scope for a correlated reference inside
+        # the rewrite, so the synthetic name has to clear those as well
+        self.assertEqual(
+            parse_one(
+                "SELECT * FROM x AS _t0 "
+                "WHERE _t0.a IN ((SELECT a FROM y WHERE y.b = _t0.b) ORDER BY a)",
+                read="spark",
+            ).sql("sqlite"),
+            "SELECT * FROM x AS _t0 WHERE _t0.a IN "
+            "(SELECT * FROM (SELECT a FROM y WHERE y.b = _t0.b) AS _t1 ORDER BY a)",
+        )
+
     def test_wrapped_query_modifiers_built_tree(self):
         # a hand-built subquery has no wrapper to supply the parens the rewrite drops
         def built():
