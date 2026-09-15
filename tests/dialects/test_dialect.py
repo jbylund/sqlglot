@@ -5191,8 +5191,6 @@ FROM subquery2""",
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
 
     def test_wrapped_query_modifiers_alias_collision_outer(self):
-        # the enclosing query's relations stay in scope for a correlated reference inside
-        # the rewrite, so the synthetic name has to clear those as well
         self.assertEqual(
             parse_one(
                 "SELECT * FROM x AS _t0 "

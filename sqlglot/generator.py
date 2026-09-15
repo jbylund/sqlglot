@@ -3512,8 +3512,7 @@ class Generator:
             select.set(key, value)
 
         if not expression.args.get("alias"):
-            # joins and laterals are hoisted into the same FROM, and an enclosing query's
-            # names stay in scope for correlated references, so the name has to clear both
+            # the name has to clear the FROM it builds and the query it is nested in
             relations = (exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values)
             scopes = (select,) if outer is None else (select, outer.root())
             taken = {node.alias_or_name for scope in scopes for node in scope.find_all(*relations)}

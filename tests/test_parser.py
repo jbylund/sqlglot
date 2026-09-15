@@ -362,8 +362,6 @@ class TestParser(unittest.TestCase):
                 )
 
     def test_wrapped_query_modifiers_connect_first(self):
-        # the CONNECT BY lands on the wrapper, so a trailing modifier after it cannot fold
-        # into the query and pop that wrapper off, taking the clause with it
         for tail in ("LIMIT 1", "ORDER BY a"):
             sql = (
                 "SELECT * FROM ((SELECT a FROM x) "
