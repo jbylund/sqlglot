@@ -1904,6 +1904,11 @@ class Generator:
             order = expression.args.get("order")
             offset = expression.args.get("offset")
 
+            # dialects that attach only the offset to the set operation leave the order on its
+            # last branch, so the order has to come out with the offset or it gets stranded
+            if offset and not order and expression.expression:
+                order = expression.expression.args.get("order")
+
             if limit or order or offset:
                 select = self._move_ctes_to_top_level(
                     exp.subquery(expression, "_l_0", copy=False).select("*", copy=False)
