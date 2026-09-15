@@ -247,7 +247,6 @@ class TestParser(unittest.TestCase):
         self.assertEqual(set(tables), {"a", "b.c", "d"})
 
     def test_wrapped_query_modifiers(self):
-        # some dialects merge a trailing modifier into the query, others apply it to the result (#71)
         sql = "(SELECT a FROM x LIMIT 3) ORDER BY a"
 
         for dialect, expected in (
@@ -291,7 +290,6 @@ class TestParser(unittest.TestCase):
                 self.assertEqual(parse_one(sql, read="postgres").sql("postgres"), expected)
 
     def test_wrapped_query_modifiers_detach_wrapper(self):
-        # the wrapper the merge discards must not stay on as the parent of the query it returns
         for sql in (
             "(SELECT a FROM x LIMIT 3) ORDER BY a",
             "((SELECT 1)) LIMIT 1",
@@ -304,8 +302,7 @@ class TestParser(unittest.TestCase):
                 self.assertEqual(merged.depth, 0)
 
     def test_wrapped_query_modifiers_not_merged(self):
-        # no engine accepts either shape after a parenthesized query; sqlglot parses the
-        # superset, and the point here is that the merge declines rather than guesses
+        # no engine accepts either shape; the merge declines rather than guesses
         for sql in (
             "(SELECT a FROM x) WHERE a > 2",
             "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",
@@ -339,8 +336,6 @@ class TestParser(unittest.TestCase):
         )
 
     def test_wrapped_query_modifiers_connect(self):
-        # START WITH cannot be folded in, and the collapse must not drop it on the floor,
-        # including when a further trailing modifier follows the CONNECT BY
         for tail, expected in (
             ("", "(SELECT a FROM x LIMIT 1) START WITH a = 1 CONNECT BY PRIOR a = a"),
             (
@@ -375,8 +370,7 @@ class TestParser(unittest.TestCase):
                     self.assertIsInstance(wrapper.args.get("connect"), exp.Connect)
 
     def test_wrapped_query_modifiers_after_trailing(self):
-        # postgres and duckdb reject a non-trailing clause that follows a trailing one,
-        # so the merge cannot keep folding and cannot fall back to applying it to the result
+        # postgres and duckdb reject a non-trailing clause that follows a trailing one
         for sql, clause in (
             ("(SELECT a FROM x) LIMIT 1 WHERE a > 2", "WHERE"),
             ("(SELECT a FROM x) ORDER BY a TABLESAMPLE (10)", "TABLESAMPLE"),

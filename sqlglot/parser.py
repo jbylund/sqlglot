@@ -1868,8 +1868,7 @@ class Parser:
     MODIFIERS_ATTACHED_TO_SET_OP: t.ClassVar = True
     SET_OP_MODIFIERS: t.ClassVar = {"order", "limit", "offset", "sort", "distribute", "cluster"}
 
-    # Whether a modifier trailing a parenthesized query merges into it (Postgres reads
-    # `(SELECT a FROM x LIMIT 3) ORDER BY a` as `SELECT a FROM x ORDER BY a LIMIT 3`)
+    # Whether a modifier trailing a parenthesized query merges into it, as Postgres does
     MODIFIERS_MERGED_INTO_WRAPPED_QUERY: t.ClassVar = False
 
     # Whether to parse IF statements that aren't followed by a left parenthesis as commands
