@@ -2102,6 +2102,7 @@ class TestDialect(Validator):
             write={
                 "": "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
                 "clickhouse": "SELECT * FROM (SELECT * FROM a UNION DISTINCT SELECT * FROM b) AS _l_0 OFFSET 1",
+                "tsql": "SELECT * FROM (SELECT * FROM a UNION SELECT * FROM b) AS _l_0 ORDER BY (SELECT NULL) OFFSET 1 ROWS",
             },
         )
 
