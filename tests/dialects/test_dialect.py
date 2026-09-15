@@ -5077,7 +5077,7 @@ FROM subquery2""",
                     )
                     self.assertEqual(sql, "REGEXP_REPLACE('aaa', 'a', 'b', 'g')")
 
-    # dialects that merge a trailing modifier into the query, plus those that reject it (#71)
+    # dialects that merge a trailing modifier into the query, plus those that reject it
     MERGE_WRAPPED_MODIFIERS = {"postgres", "duckdb", "redshift", "materialize"}
     NO_BARE_WRAPPED_MODIFIERS = MERGE_WRAPPED_MODIFIERS | {"clickhouse", "sqlite"}
 
@@ -5128,7 +5128,6 @@ FROM subquery2""",
         )
 
     def test_wrapped_query_modifiers_merged_source(self):
-        # a merged tree must stay flat, never re-wrap
         self.validate_all(
             "SELECT a FROM x LIMIT 3 OFFSET 1",
             read={"postgres": "(SELECT a FROM x LIMIT 3) OFFSET 1"},
@@ -5155,7 +5154,6 @@ FROM subquery2""",
                 self.assertEqual(parse_one(sql).sql("clickhouse"), expected)
 
     def test_wrapped_query_modifiers_aliased(self):
-        # an alias on the subquery is reused by the rewrite instead of blocking it
         for dialect in ("sqlite", "postgres", "duckdb"):
             with self.subTest(dialect):
                 self.assertEqual(
@@ -5164,7 +5162,6 @@ FROM subquery2""",
                 )
 
     def test_wrapped_query_modifiers_alias_collision(self):
-        # the synthetic name has to clear relations hoisted into the same FROM
         for sql, expected in (
             (
                 "(SELECT a FROM x) JOIN _t0 ON TRUE LIMIT 1",
@@ -5190,6 +5187,17 @@ FROM subquery2""",
             with self.subTest(sql):
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
 
+    def test_wrapped_query_modifiers_alias_collision_outer(self):
+        self.assertEqual(
+            parse_one(
+                "SELECT * FROM x AS _t0 "
+                "WHERE _t0.a IN ((SELECT a FROM y WHERE y.b = _t0.b) ORDER BY a)",
+                read="spark",
+            ).sql("sqlite"),
+            "SELECT * FROM x AS _t0 WHERE _t0.a IN "
+            "(SELECT * FROM (SELECT a FROM y WHERE y.b = _t0.b) AS _t1 ORDER BY a)",
+        )
+
     def test_wrapped_query_modifiers_built_tree(self):
         # a hand-built subquery has no wrapper to supply the parens the rewrite drops
         def built():
@@ -5205,9 +5213,6 @@ FROM subquery2""",
         for parsed, tree in (
             ("SELECT * FROM ((SELECT a FROM x) LIMIT 1)", exp.select("*").from_(built())),
             ("SELECT ((SELECT a FROM x) LIMIT 1)", exp.select(built())),
-            # parsing splits the alias onto a wrapper, so a built tree is the only way to
-            # reach the rewrite with one attached - it names the relation the modifier
-            # produces and has to stay outside
             (
                 "SELECT t.a FROM ((SELECT a FROM x) LIMIT 1) AS t",
                 exp.select("t.a").from_(aliased()),
@@ -5217,7 +5222,6 @@ FROM subquery2""",
                 self.assertEqual(tree.sql("postgres"), parse_one(parsed).sql("postgres"))
 
     def test_wrapped_query_modifiers_comments(self):
-        # the rewrite regenerates the subquery it wraps, so its comments must not be emitted twice
         expression = parse_one("/* c */ (SELECT a FROM x) LIMIT 1", read="mysql")
 
         for dialect, expected in (
@@ -5262,8 +5266,7 @@ FROM subquery2""",
                 self.assertEqual(parse_one(sql).sql("postgres"), expected)
 
     def test_wrapped_query_modifiers_keep_sample(self):
-        # duckdb rather than postgres: postgres has no TABLESAMPLE on a subquery, so the
-        # rewritten SQL would not run there
+        # duckdb rather than postgres, which has no TABLESAMPLE on a subquery
         self.assertEqual(
             parse_one("(SELECT a FROM x) TABLESAMPLE (10 PERCENT) LIMIT 1").sql("duckdb"),
             "SELECT * FROM (SELECT a FROM x) AS _t0 TABLESAMPLE (10 PERCENT) LIMIT 1",

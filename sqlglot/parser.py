@@ -1868,8 +1868,7 @@ class Parser:
     MODIFIERS_ATTACHED_TO_SET_OP: t.ClassVar = True
     SET_OP_MODIFIERS: t.ClassVar = {"order", "limit", "offset", "sort", "distribute", "cluster"}
 
-    # Whether a modifier trailing a parenthesized query merges into it (Postgres reads
-    # `(SELECT a FROM x LIMIT 3) ORDER BY a` as `SELECT a FROM x ORDER BY a LIMIT 3`)
+    # Whether a modifier trailing a parenthesized query merges into it, as Postgres does
     MODIFIERS_MERGED_INTO_WRAPPED_QUERY: t.ClassVar = False
 
     # Whether to parse IF statements that aren't followed by a left parenthesis as commands
@@ -4418,6 +4417,11 @@ class Parser:
                             expression.set("offset", None)
 
                             if offset:
+                                if target.args.get("offset"):
+                                    self.raise_error(
+                                        "Found multiple 'OFFSET' clauses", token=modifier_token
+                                    )
+
                                 offset = exp.Offset(expression=offset)
                                 target.set("offset", offset)
 
@@ -4440,8 +4444,10 @@ class Parser:
                                 "'START WITH' cannot follow a trailing modifier",
                                 token=modifier_token,
                             )
-                            merge_target = None
                             merged = False
+
+                        # the clause lands on the wrapper the collapse would discard
+                        merge_target = None
 
                         this.set("connect", connect)
                         continue

@@ -535,9 +535,8 @@ class Generator:
     # True means limit 1 happens after the set op, False means it it happens on y.
     SET_OP_MODIFIERS = True
 
-    # Whether a query modifier can trail a parenthesized query, eg. `(SELECT a FROM x) LIMIT 1`.
-    # False means a derived table has to carry it instead, because the dialect either rejects the
-    # syntax (ClickHouse, SQLite) or merges it into the parentheses (Postgres, DuckDB)
+    # Whether a query modifier can trail a parenthesized query, eg. `(SELECT a FROM x) LIMIT 1`
+    # False for dialects that reject the syntax and for those that merge it into the parens
     SUPPORTS_WRAPPED_QUERY_MODIFIERS = True
 
     # Whether parameters from COPY statement are wrapped in parentheses
@@ -3491,6 +3490,8 @@ class Generator:
         `(SELECT a FROM x LIMIT 3) ORDER BY a` becomes
         `SELECT * FROM (SELECT a FROM x LIMIT 3) AS _t0 ORDER BY a`.
         """
+        outer = expression.parent
+
         modifiers = {}
         for key in (*exp.QUERY_MODIFIERS, "with_"):
             if key in ("pivots", "sample"):
@@ -3503,20 +3504,15 @@ class Generator:
 
         select = exp.select("*", copy=False).from_(expression, copy=False)
 
-        # the subquery is regenerated below, so its comments move up rather than doubling
         select.add_comments(expression.pop_comments())
 
         for key, value in modifiers.items():
             select.set(key, value)
 
         if not expression.args.get("alias"):
-            # joins and laterals are hoisted into the same FROM, so the name has to clear them
-            taken = {
-                node.alias_or_name
-                for node in select.find_all(
-                    exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values
-                )
-            }
+            relations = (exp.Table, exp.Subquery, exp.Lateral, exp.Unnest, exp.Values)
+            scopes = (select,) if outer is None else (select, outer.root())
+            taken = {node.alias_or_name for scope in scopes for node in scope.find_all(*relations)}
             name = self._next_name()
             while name in taken:
                 name = self._next_name()
@@ -3529,14 +3525,12 @@ class Generator:
         if not self.SUPPORTS_WRAPPED_QUERY_MODIFIERS and any(
             expression.args.get(key) for key in exp.TRAILING_QUERY_MODIFIERS
         ):
-            # read before the rewrite reparents it: a bare query still needs the parens this
-            # node would have supplied, unless the parent supplies them itself
+            # read before the rewrite reparents it: a bare query still needs these parens
             needs_parens = expression.parent is not None and not isinstance(
                 expression.parent, (exp.Subquery, exp.CTE, exp.Insert, exp.Create)
             )
 
-            # an alias names the relation the modifier produces, not the query inside the
-            # parens, so it belongs outside the rewrite - where there is a slot for it
+            # the alias names the relation the modifier produces, so it stays outside
             table_alias = expression.args.get("alias") if needs_parens else None
             if table_alias:
                 expression.set("alias", None)
