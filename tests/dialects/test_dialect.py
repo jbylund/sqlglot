@@ -2096,6 +2096,26 @@ class TestDialect(Validator):
             },
         )
 
+        # an offset is a reason to nest on its own, or it binds to the last branch
+        self.validate_all(
+            "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
+            write={
+                "": "SELECT * FROM a UNION SELECT * FROM b OFFSET 1",
+                "clickhouse": "SELECT * FROM (SELECT * FROM a UNION DISTINCT SELECT * FROM b) AS _l_0 OFFSET 1",
+                "tsql": "SELECT * FROM (SELECT * FROM a UNION SELECT * FROM b) AS _l_0 ORDER BY (SELECT NULL) OFFSET 1 ROWS",
+            },
+        )
+
+        # an offset left behind in the derived table would skip rows before the order by
+        self.validate_all(
+            "SELECT * FROM a UNION SELECT * FROM b ORDER BY x LIMIT 1 OFFSET 1",
+            write={
+                "": "SELECT * FROM a UNION SELECT * FROM b ORDER BY x LIMIT 1 OFFSET 1",
+                "clickhouse": "SELECT * FROM (SELECT * FROM a UNION DISTINCT SELECT * FROM b) AS _l_0 ORDER BY x NULLS FIRST LIMIT 1 OFFSET 1",
+                "tsql": "SELECT * FROM (SELECT * FROM a UNION SELECT * FROM b) AS _l_0 ORDER BY x OFFSET 1 ROWS FETCH FIRST 1 ROWS ONLY",
+            },
+        )
+
         self.validate_all(
             "SELECT * FROM a UNION SELECT * FROM b",
             read={
@@ -5076,6 +5096,257 @@ FROM subquery2""",
                         target_dialect
                     )
                     self.assertEqual(sql, "REGEXP_REPLACE('aaa', 'a', 'b', 'g')")
+
+    # dialects that merge a trailing modifier into the query, plus those that reject it
+    MERGE_WRAPPED_MODIFIERS = {"postgres", "duckdb", "redshift", "materialize"}
+    NO_BARE_WRAPPED_MODIFIERS = MERGE_WRAPPED_MODIFIERS | {"clickhouse", "sqlite"}
+
+    def test_wrapped_query_modifier_flags(self):
+        # behaviour, not the flags: mypyc turns class attributes into unreadable descriptors
+        nested = parse_one("(SELECT a FROM x LIMIT 3) LIMIT 2")
+
+        for dialect in Dialects:
+            name = dialect.value
+            if name in ("dax", "prql"):  # not SQL
+                continue
+
+            with self.subTest(f"wrapped modifier handling in {name or 'default'}"):
+                parsed = parse_one("(SELECT a FROM x LIMIT 3) OFFSET 1", read=name)
+                self.assertEqual(
+                    not isinstance(parsed, exp.Subquery),
+                    name in self.MERGE_WRAPPED_MODIFIERS,
+                )
+                self.assertEqual(
+                    nested.sql(name).startswith("("),
+                    name not in self.NO_BARE_WRAPPED_MODIFIERS,
+                )
+
+        # a dialect that merges must never be handed the bare form
+        self.assertLessEqual(self.MERGE_WRAPPED_MODIFIERS, self.NO_BARE_WRAPPED_MODIFIERS)
+
+    def test_wrapped_query_modifiers(self):
+        derived = "SELECT * FROM (SELECT a FROM x LIMIT 3) AS _t0 LIMIT 2"
+        self.validate_all(
+            "(SELECT a FROM x LIMIT 3) LIMIT 2",
+            read={
+                "mysql": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                "trino": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+            },
+            write={
+                "": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                "mysql": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                "trino": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                "presto": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                "risingwave": "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                "postgres": derived,
+                "duckdb": derived,
+                "redshift": derived,
+                "materialize": derived,
+                "clickhouse": derived,
+                "sqlite": derived,
+            },
+        )
+
+    def test_wrapped_query_modifiers_merged_source(self):
+        self.validate_all(
+            "SELECT a FROM x LIMIT 3 OFFSET 1",
+            read={"postgres": "(SELECT a FROM x LIMIT 3) OFFSET 1"},
+            write={
+                "mysql": "SELECT a FROM x LIMIT 3 OFFSET 1",
+                "trino": "SELECT a FROM x OFFSET 1 LIMIT 3",
+                "sqlite": "SELECT a FROM x LIMIT 3 OFFSET 1",
+            },
+        )
+
+    def test_wrapped_query_modifiers_wrap_once(self):
+        # clickhouse also re-nests set operation modifiers via SET_OP_MODIFIERS
+        for sql, expected in (
+            (
+                "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2",
+                "SELECT * FROM (SELECT a FROM x UNION ALL SELECT b FROM y) AS _t0 LIMIT 2",
+            ),
+            (
+                "((SELECT a FROM x) LIMIT 3) LIMIT 2",
+                "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS _t1 LIMIT 3) AS _t0 LIMIT 2",
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql).sql("clickhouse"), expected)
+
+    def test_wrapped_query_modifiers_aliased(self):
+        for dialect in ("sqlite", "postgres", "duckdb"):
+            with self.subTest(dialect):
+                self.assertEqual(
+                    parse_one("SELECT * FROM ((SELECT a FROM x) AS t LIMIT 1)").sql(dialect),
+                    "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS t LIMIT 1)",
+                )
+
+    def test_wrapped_query_modifiers_alias_collision(self):
+        for sql, expected in (
+            (
+                "(SELECT a FROM x) JOIN _t0 ON TRUE LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 JOIN _t0 ON TRUE LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) JOIN (SELECT 1) AS _t0 ON TRUE LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 JOIN (SELECT 1) AS _t0 ON TRUE LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) CROSS JOIN LATERAL UNNEST(b) AS _t0 LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 CROSS JOIN LATERAL UNNEST(b) AS _t0 LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) CROSS JOIN UNNEST(b) AS _t0 LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 CROSS JOIN UNNEST(b) AS _t0 LIMIT 1",
+            ),
+            (
+                "(SELECT a FROM x) CROSS JOIN (VALUES (1)) AS _t0(c) LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t1 CROSS JOIN (VALUES (1)) AS _t0(c) LIMIT 1",
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
+    def test_wrapped_query_modifiers_alias_collision_outer(self):
+        self.assertEqual(
+            parse_one(
+                "SELECT * FROM x AS _t0 "
+                "WHERE _t0.a IN ((SELECT a FROM y WHERE y.b = _t0.b) ORDER BY a)",
+                read="spark",
+            ).sql("sqlite"),
+            "SELECT * FROM x AS _t0 WHERE _t0.a IN "
+            "(SELECT * FROM (SELECT a FROM y WHERE y.b = _t0.b) AS _t1 ORDER BY a)",
+        )
+
+    def test_wrapped_query_modifiers_alias_collision_nested(self):
+        self.assertEqual(
+            parse_one(
+                "SELECT * FROM x AS _t1 WHERE _t1.a IN "
+                "((SELECT a FROM y WHERE y.b IN ((SELECT c FROM z) ORDER BY _t1.d)) LIMIT 2)",
+                read="spark",
+            ).sql("postgres"),
+            "SELECT * FROM x AS _t1 WHERE _t1.a IN ("
+            "SELECT * FROM (SELECT a FROM y WHERE y.b IN ("
+            "SELECT * FROM (SELECT c FROM z) AS _t2 ORDER BY _t1.d NULLS FIRST"
+            ")) AS _t0 LIMIT 2)",
+        )
+
+    def test_wrapped_query_modifiers_built_tree(self):
+        # a hand-built subquery has no wrapper to supply the parens the rewrite drops
+        def built():
+            subquery = parse_one("SELECT a FROM x").subquery()
+            subquery.set("limit", exp.Limit(expression=exp.Literal.number(1)))
+            return subquery
+
+        def aliased():
+            subquery = built()
+            subquery.set("alias", exp.TableAlias(this=exp.to_identifier("t")))
+            return subquery
+
+        for parsed, tree in (
+            ("SELECT * FROM ((SELECT a FROM x) LIMIT 1)", exp.select("*").from_(built())),
+            ("SELECT ((SELECT a FROM x) LIMIT 1)", exp.select(built())),
+            (
+                "SELECT t.a FROM ((SELECT a FROM x) LIMIT 1) AS t",
+                exp.select("t.a").from_(aliased()),
+            ),
+        ):
+            with self.subTest(parsed):
+                self.assertEqual(tree.sql("postgres"), parse_one(parsed).sql("postgres"))
+
+    def test_wrapped_query_modifiers_comments(self):
+        expression = parse_one("/* c */ (SELECT a FROM x) LIMIT 1", read="mysql")
+
+        for dialect, expected in (
+            ("mysql", "(SELECT a FROM x) LIMIT 1 /* c */"),
+            ("postgres", "/* c */ SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1"),
+        ):
+            with self.subTest(dialect):
+                self.assertEqual(expression.sql(dialect, comments=True), expected)
+
+    def test_wrapped_query_modifiers_positions(self):
+        for sql, expected in (
+            (
+                "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",
+                "SELECT * FROM (SELECT a FROM x) AS _t0 JOIN y ON TRUE LIMIT 1",
+            ),
+            (
+                "WITH c AS ((SELECT a FROM x) LIMIT 1) SELECT * FROM c",
+                "WITH c AS (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1) SELECT * FROM c",
+            ),
+            (
+                "INSERT INTO t (SELECT a FROM x) LIMIT 1",
+                "INSERT INTO t SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1",
+            ),
+            (
+                "CREATE VIEW v AS (SELECT a FROM x) LIMIT 1",
+                "CREATE VIEW v AS SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1",
+            ),
+            (
+                "SELECT ((SELECT a FROM x) LIMIT 1)",
+                "SELECT (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 1)",
+            ),
+            (
+                "SELECT * FROM y WHERE b IN ((SELECT a FROM x) LIMIT 2)",
+                "SELECT * FROM y WHERE b IN (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2)",
+            ),
+            (
+                "SELECT * FROM ((SELECT a FROM x) LIMIT 2) AS t",
+                "SELECT * FROM (SELECT * FROM (SELECT a FROM x) AS _t0 LIMIT 2) AS t",
+            ),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql).sql("postgres"), expected)
+
+    def test_wrapped_query_modifiers_locks(self):
+        # a lock names relations inside the query, so it follows them into the derived table
+        for sql, expected in (
+            ("(SELECT a FROM x) FOR UPDATE OF x", "(SELECT a FROM x) FOR UPDATE OF x"),
+            (
+                "(SELECT a FROM x) LIMIT 3 FOR UPDATE OF x",
+                "SELECT * FROM (SELECT a FROM x FOR UPDATE OF x) AS _t0 LIMIT 3",
+            ),
+            (
+                "(SELECT a FROM x FOR UPDATE) LIMIT 3 FOR SHARE",
+                "SELECT * FROM (SELECT a FROM x FOR UPDATE FOR SHARE) AS _t0 LIMIT 3",
+            ),
+        ):
+            with self.subTest(sql):
+                expression = parse_one(sql, read="mysql")
+                self.assertEqual(expression.sql("postgres"), expected)
+                self.assertEqual(expression.sql("mysql"), sql)
+
+    def test_wrapped_query_modifiers_keep_sample(self):
+        # duckdb rather than postgres, which has no TABLESAMPLE on a subquery
+        self.assertEqual(
+            parse_one("(SELECT a FROM x) TABLESAMPLE (10 PERCENT) LIMIT 1").sql("duckdb"),
+            "SELECT * FROM (SELECT a FROM x) AS _t0 TABLESAMPLE (10 PERCENT) LIMIT 1",
+        )
+
+    def test_wrapped_query_modifiers_leave_derived_tables_alone(self):
+        derived = parse_one("SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2")
+        for dialect, expected in (
+            ("", "SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2"),
+            ("mysql", "SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2"),
+            ("sqlite", "SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a LIMIT 2"),
+            (
+                "postgres",
+                "SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a NULLS FIRST LIMIT 2",
+            ),
+            (
+                "duckdb",
+                "SELECT * FROM (SELECT a FROM x LIMIT 3) AS t ORDER BY a NULLS FIRST LIMIT 2",
+            ),
+        ):
+            with self.subTest(f"derived table in {dialect or 'default'}"):
+                self.assertEqual(derived.sql(dialect), expected)
+
+        for sql, dialect in (
+            ("SELECT * FROM (SELECT a, b FROM x) AS t PIVOT(SUM(b) FOR a IN ('p'))", "duckdb"),
+            ("SELECT * FROM ((SELECT 1 AS x) CROSS JOIN (SELECT 2 AS y)) AS z", "postgres"),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql, read=dialect).sql(dialect), sql)
 
     def test_subquery_unwrap(self):
         self.validate_identity(

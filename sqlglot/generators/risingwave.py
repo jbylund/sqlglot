@@ -7,6 +7,7 @@ from sqlglot.generators.postgres import PostgresGenerator
 
 class RisingWaveGenerator(PostgresGenerator):
     LOCKING_READS_SUPPORTED = False
+    SUPPORTS_WRAPPED_QUERY_MODIFIERS = True
     SUPPORTS_BETWEEN_FLAGS = False
 
     TRANSFORMS = {

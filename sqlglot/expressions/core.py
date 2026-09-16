@@ -2492,6 +2492,22 @@ QUERY_MODIFIERS = {
 }
 
 
+# Modifiers that may trail a parenthesized query, eg. `(SELECT a FROM x LIMIT 3) ORDER BY a`
+TRAILING_QUERY_MODIFIERS = (
+    "order",
+    "limit",
+    "offset",
+    "sort",
+    "cluster",
+    "distribute",
+    "locks",
+)
+
+
+# Trailing modifiers that force a derived table, for dialects that can't be handed the bare form
+NESTING_QUERY_MODIFIERS = tuple(k for k in TRAILING_QUERY_MODIFIERS if k != "locks")
+
+
 TIMESTAMP_PARTS = {
     "year": False,
     "month": False,

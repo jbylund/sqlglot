@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from sqlglot import Parser, exp, parse, parse_one
+from sqlglot.dialects import Dialect
 from sqlglot.errors import ErrorLevel, ParseError
 from sqlglot.parser import logger as parser_logger
 from tests.helpers import assert_logger_contains
@@ -245,6 +246,184 @@ class TestParser(unittest.TestCase):
     def test_table(self):
         tables = [t.sql() for t in parse_one("select * from a, b.c, .d").find_all(exp.Table)]
         self.assertEqual(set(tables), {"a", "b.c", "d"})
+
+    def test_wrapped_query_modifiers(self):
+        sql = "(SELECT a FROM x LIMIT 3) ORDER BY a"
+
+        for dialect, expected in (
+            ("", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("mysql", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("trino", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("presto", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("risingwave", "(SELECT a FROM x LIMIT 3) ORDER BY a"),
+            ("postgres", "SELECT a FROM x ORDER BY a LIMIT 3"),
+            ("duckdb", "SELECT a FROM x ORDER BY a LIMIT 3"),
+            ("redshift", "SELECT a FROM x ORDER BY a LIMIT 3"),
+            ("materialize", "SELECT a FROM x ORDER BY a LIMIT 3"),
+        ):
+            with self.subTest(dialect or "default"):
+                self.assertEqual(parse_one(sql, read=dialect).sql(dialect), expected)
+
+    def test_wrapped_query_modifiers_nest(self):
+        subquery = parse_one("(SELECT a FROM x LIMIT 3) ORDER BY a").assert_is(exp.Subquery)
+        self.assertIsInstance(subquery.args.get("order"), exp.Order)
+        self.assertIsNone(subquery.this.args.get("order"))
+        self.assertIsInstance(subquery.this.args.get("limit"), exp.Limit)
+
+    def test_wrapped_query_modifiers_merge_target(self):
+        for sql, expected in (
+            (
+                "(SELECT a FROM x UNION ALL SELECT b FROM y) LIMIT 2",
+                "SELECT a FROM x UNION ALL SELECT b FROM y LIMIT 2",
+            ),
+            (
+                "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
+                "WITH c AS (SELECT 1 AS a) SELECT a FROM c ORDER BY a",
+            ),
+            (
+                "WITH c AS (SELECT 1 AS a) (SELECT a FROM c) ORDER BY a",
+                "WITH c AS (SELECT 1 AS a) SELECT a FROM c ORDER BY a",
+            ),
+            ("((SELECT 1)) LIMIT 1", "SELECT 1 LIMIT 1"),
+            ("(SELECT a FROM x) LIMIT 2 OFFSET 1", "SELECT a FROM x LIMIT 2 OFFSET 1"),
+        ):
+            with self.subTest(sql):
+                self.assertEqual(parse_one(sql, read="postgres").sql("postgres"), expected)
+
+    def test_wrapped_query_modifiers_detach_wrapper(self):
+        for sql in (
+            "(SELECT a FROM x LIMIT 3) ORDER BY a",
+            "((SELECT 1)) LIMIT 1",
+            "(WITH c AS (SELECT 1 AS a) SELECT a FROM c) ORDER BY a",
+        ):
+            with self.subTest(sql):
+                merged = parse_one(sql, read="postgres")
+                self.assertIsNone(merged.parent)
+                self.assertIs(merged.root(), merged)
+                self.assertEqual(merged.depth, 0)
+
+    def test_wrapped_query_modifiers_not_merged(self):
+        # no engine accepts either shape; the merge declines rather than guesses
+        for sql in (
+            "(SELECT a FROM x) WHERE a > 2",
+            "(SELECT a FROM x) JOIN y ON TRUE LIMIT 1",
+        ):
+            with self.subTest(sql):
+                self.assertIsInstance(parse_one(sql, read="postgres"), exp.Subquery)
+
+    def test_wrapped_query_modifiers_duplicate_slot(self):
+        for sql, clause in (
+            ("(SELECT a FROM x LIMIT 3) LIMIT 2", "LIMIT"),
+            ("(SELECT a FROM x ORDER BY a) ORDER BY a DESC", "ORDER BY"),
+            ("(SELECT a FROM x OFFSET 1) OFFSET 2", "OFFSET"),
+            ("(SELECT a FROM x OFFSET 1) LIMIT 2, 3", "OFFSET"),
+        ):
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(f"{sql} in {dialect}"):
+                    with self.assertRaises(ParseError) as ctx:
+                        parse_one(sql, read=dialect)
+                    self.assertIn(f"Found multiple '{clause}' clauses", str(ctx.exception))
+
+            with self.subTest(f"{sql} nests"):
+                self.assertIsInstance(parse_one(sql), exp.Subquery)
+
+        self.assertEqual(
+            parse_one(
+                "(SELECT a FROM x LIMIT 3) LIMIT 2",
+                read="postgres",
+                error_level=ErrorLevel.IGNORE,
+            ).sql("postgres"),
+            "SELECT a FROM x LIMIT 2",
+        )
+
+    def test_wrapped_query_modifiers_locks(self):
+        # duckdb shares the merge flag but rejects locking clauses outright
+        self.assertEqual(
+            parse_one("(SELECT a FROM x FOR UPDATE) FOR SHARE", read="postgres").sql("postgres"),
+            "SELECT a FROM x FOR UPDATE FOR SHARE",
+        )
+        self.assertEqual(
+            parse_one("(SELECT a FROM x FOR UPDATE) FOR SHARE", read="mysql").sql("mysql"),
+            "(SELECT a FROM x FOR UPDATE) FOR SHARE",
+        )
+
+        def fills_the_locks_slot(dialect: str) -> bool:
+            # tsql routes FOR elsewhere, and a few dialects parse no SELECT at all
+            try:
+                lock = parse_one("SELECT a FROM x FOR UPDATE", read=dialect)
+            except ParseError:
+                return False
+
+            return bool(lock.args.get("locks"))
+
+        # the concatenation belongs to the fold, so an unwrapped duplicate still raises
+        for dialect in filter(fills_the_locks_slot, Dialect.classes):
+            with self.subTest(dialect):
+                with self.assertRaises(ParseError) as ctx:
+                    parse_one("SELECT a FROM x FOR UPDATE LIMIT 1 FOR SHARE", read=dialect)
+                self.assertIn("Found multiple 'FOR' clauses", str(ctx.exception))
+
+    def test_wrapped_query_modifiers_connect(self):
+        for tail, expected in (
+            ("", "(SELECT a FROM x LIMIT 1) START WITH a = 1 CONNECT BY PRIOR a = a"),
+            (
+                " ORDER BY a",
+                "SELECT * FROM (SELECT a FROM x LIMIT 1) AS _t0 START WITH a = 1 "
+                "CONNECT BY PRIOR a = a ORDER BY a",
+            ),
+        ):
+            sql = f"(SELECT a FROM x) LIMIT 1 START WITH a = 1 CONNECT BY PRIOR a = a{tail}"
+
+            with self.subTest(sql):
+                with self.assertRaises(ParseError) as ctx:
+                    parse_one(sql, read="postgres")
+                self.assertIn("'START WITH' cannot follow a trailing modifier", str(ctx.exception))
+
+                self.assertEqual(
+                    parse_one(sql, read="postgres", error_level=ErrorLevel.IGNORE).sql("postgres"),
+                    expected,
+                )
+
+    def test_wrapped_query_modifiers_connect_first(self):
+        for tail in ("LIMIT 1", "ORDER BY a"):
+            sql = (
+                "SELECT * FROM ((SELECT a FROM x) "
+                f"START WITH a = 1 CONNECT BY PRIOR a = a {tail}) AS t"
+            )
+
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(f"{sql} in {dialect}"):
+                    wrapper = parse_one(sql, read=dialect).find(exp.From).this.this
+                    self.assertIsInstance(wrapper, exp.Subquery)
+                    self.assertIsInstance(wrapper.args.get("connect"), exp.Connect)
+
+    def test_wrapped_query_modifiers_after_trailing(self):
+        # postgres and duckdb reject a non-trailing clause that follows a trailing one
+        for sql, clause in (
+            ("(SELECT a FROM x) LIMIT 1 WHERE a > 2", "WHERE"),
+            ("(SELECT a FROM x) ORDER BY a TABLESAMPLE (10)", "TABLESAMPLE"),
+            ("(SELECT a FROM x) LIMIT 1 GROUP BY a", "GROUP BY"),
+            ("(VALUES (1)) LIMIT 1 FOR UPDATE", "FOR"),
+        ):
+            for dialect in ("postgres", "duckdb"):
+                with self.subTest(f"{sql} in {dialect}"):
+                    with self.assertRaises(ParseError) as ctx:
+                        parse_one(sql, read=dialect)
+                    self.assertIn(
+                        f"'{clause}' cannot follow a trailing modifier", str(ctx.exception)
+                    )
+
+            with self.subTest(f"{sql} nests"):
+                self.assertIsInstance(parse_one(sql), exp.Subquery)
+
+        self.assertEqual(
+            parse_one(
+                "(SELECT a FROM x) LIMIT 1 WHERE a > 2",
+                read="postgres",
+                error_level=ErrorLevel.IGNORE,
+            ).sql("postgres"),
+            "(SELECT a FROM x LIMIT 1) WHERE a > 2",
+        )
 
     def test_union(self):
         self.assertIsInstance(parse_one("SELECT * FROM (SELECT 1) UNION SELECT 2"), exp.Union)
@@ -1234,6 +1413,18 @@ class TestParser(unittest.TestCase):
             )
 
         self.assertIn("Found multiple 'START WITH' clauses. Line 1, Col: 65.", str(ctx.exception))
+
+        sql = "SELECT a FROM x OFFSET 1 LIMIT 2, 3"
+
+        with self.assertRaises(ParseError) as ctx:
+            parse_one(sql)
+
+        self.assertIn("Found multiple 'OFFSET' clauses. Line 1, Col: 30.", str(ctx.exception))
+
+        self.assertEqual(
+            parse_one(sql, error_level=ErrorLevel.IGNORE).sql(),
+            "SELECT a FROM x LIMIT 3 OFFSET 2",
+        )
 
     def test_window_clause_without_from(self):
         # https://github.com/tobymao/sqlglot/issues/7438
