@@ -1902,6 +1902,7 @@ class Generator:
         if not self.SET_OP_MODIFIERS:
             limit = expression.args.get("limit")
             order = expression.args.get("order")
+            offset = expression.args.get("offset")
 
             if limit or order:
                 select = self._move_ctes_to_top_level(
@@ -1912,6 +1913,8 @@ class Generator:
                     select = select.limit(limit.pop(), copy=False)
                 if order:
                     select = select.order_by(order.pop(), copy=False)
+                if offset:
+                    select = select.offset(offset.pop(), copy=False)
                 return self.sql(select)
 
         sqls: list[str] = []

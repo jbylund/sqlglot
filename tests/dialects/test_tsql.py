@@ -165,6 +165,12 @@ class TestTSQL(Validator):
                 "": "SELECT x FROM t1 UNION ALL SELECT x FROM t2 LIMIT 1",
             },
         )
+        # T-SQL takes an ORDER BY with an OFFSET on a set operation, so neither the offset nor
+        # a branch-local TOP is a reason to nest it into a derived table
+        self.validate_identity("SELECT a FROM x UNION SELECT a FROM y ORDER BY a OFFSET 1 ROWS")
+        self.validate_identity(
+            "SELECT a FROM x UNION ALL SELECT TOP 1 a FROM y ORDER BY a OFFSET 1 ROWS"
+        )
         self.validate_all(
             "WITH t(c) AS (SELECT 1) SELECT * INTO foo FROM (SELECT c AS c FROM t) AS temp",
             read={
