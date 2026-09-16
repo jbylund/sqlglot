@@ -1904,11 +1904,14 @@ class Generator:
             order = expression.args.get("order")
             offset = expression.args.get("offset")
 
-            # dialects that attach only the offset to the set operation leave the order and the
-            # limit on its last branch, so both have to come out with the offset or they strand
+            # dialects that attach only the offset to the set operation leave the order on its
+            # last branch, and a trailing FETCH with it, so those come out with the offset or
+            # they strand. A TOP limits only the branch it sits on, so it has to stay put.
             if offset and expression.expression:
-                order = order or expression.expression.args.get("order")
-                limit = limit or expression.expression.args.get("limit")
+                branch = expression.expression
+                order = order or branch.args.get("order")
+                if isinstance(branch.args.get("limit"), exp.Fetch):
+                    limit = limit or branch.args.get("limit")
 
             if limit or order or offset:
                 select = self._move_ctes_to_top_level(
