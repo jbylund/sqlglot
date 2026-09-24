@@ -59,6 +59,7 @@ def unnest(select, parent_select, next_alias_name):
         # NOT IN has three-valued semantics that the LEFT-JOIN-anti rewrite doesn't preserve:
         # a NULL in the subquery makes NOT IN evaluate to NULL for every outer row.
         or (isinstance(predicate, exp.In) and _is_negated(predicate))
+        or (not isinstance(predicate, (exp.In, exp.Any, exp.Exists)) and not _is_single_row(select))
     ):
         return
 
@@ -417,6 +418,23 @@ def _has_aggregate_projection(select: exp.Select) -> bool:
     windows = select.args.get("windows")
 
     return any(projection_has_aggregate(projection, windows) for projection in select.selects)
+
+
+def _is_single_row(select: exp.Expr) -> bool:
+    if not isinstance(select, exp.Select):
+        return False
+
+    if not select.args.get("from_"):
+        return True
+
+    limit: exp.Limit | None = select.args.get("limit")
+    if limit is not None and limit.expression.this == "1":
+        return True
+
+    if select.args.get("group"):
+        return False
+
+    return _has_aggregate_projection(select)
 
 
 def _other_operand(expression: object) -> exp.Expr | None:
